@@ -137,6 +137,11 @@ const userSchema = new Schema(
       type: String,
       default: () => Math.random().toString(36).substr(2, 9).toUpperCase(),
     },
+    status: {
+      type: String,
+      enum: ["active", "inactive"],
+      default: "active",
+    },
     role: {
       type: String,
       enum: ["user", "admin", "storeman"],

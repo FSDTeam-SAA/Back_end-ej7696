@@ -78,6 +78,9 @@ export const login = catchAsync(async (req, res) => {
   ) {
     throw new AppError(httpStatus.FORBIDDEN, "Password is not correct");
   }
+  if (user.status !== "active") {
+    throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
+  }
   if (!(await User.isOTPVerified(user._id))) {
     const otp = generateOTP();
     const jwtPayloadOTP = {
@@ -287,6 +290,9 @@ export const refreshToken = catchAsync(async (req, res) => {
   const user = await User.findById(decoded._id);
   if (!user || user.refreshToken !== refreshToken) {
     throw new AppError(401, "Invalid refresh token");
+  }
+  if (user.status !== "active") {
+    throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
   }
   const jwtPayload = {
     _id: user._id,
