@@ -12,6 +12,9 @@ export const protect = async (req, res, next) => {
     // console.log(decoded)
     const user = await User.findById(decoded._id);
     if (user && (await User.isOTPVerified(user._id))) {
+      if (user.status !== "active") {
+        throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
+      }
       req.user = user;
     }
     next();
