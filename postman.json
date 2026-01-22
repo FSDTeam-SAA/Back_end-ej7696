@@ -1,0 +1,407 @@
+{
+  "info": {
+    "name": "Exam Platform API",
+    "_postman_id": "b2c4f9c4-6f4f-4c41-a0b2-7e0e6e9c9a31",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:5000" },
+    { "key": "token", "value": "" },
+    { "key": "admin_token", "value": "" },
+    { "key": "examId", "value": "" },
+    { "key": "attemptId", "value": "" },
+    { "key": "announcementId", "value": "" },
+    { "key": "testimonialId", "value": "" },
+    { "key": "userId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"secret\",\n  \"name\": \"Test User\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"secret\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Verify Email", "request": { "method": "POST", "url": "{{base_url}}/api/v1/auth/verify", "body": { "mode": "raw", "raw": "{\n  \"token\": \"otp_or_token\"\n}", "options": { "raw": { "language": "json" } } } } },
+        { "name": "Forget Password", "request": { "method": "POST", "url": "{{base_url}}/api/v1/auth/forget", "body": { "mode": "raw", "raw": "{\n  \"email\": \"user@example.com\"\n}", "options": { "raw": { "language": "json" } } } } },
+        { "name": "Reset Password", "request": { "method": "POST", "url": "{{base_url}}/api/v1/auth/reset-password", "body": { "mode": "raw", "raw": "{\n  \"token\": \"reset_token\",\n  \"password\": \"newpass\"\n}", "options": { "raw": { "language": "json" } } } } },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/change-password",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"old\",\n  \"newPassword\": \"new\",\n  \"confirmPassword\": \"new\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/refresh-token",
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/logout",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/user/profile",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "url": "{{base_url}}/api/v1/user/profile",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Updated Name\"\n}", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Change Password (user)",
+          "request": {
+            "method": "PUT",
+            "url": "{{base_url}}/api/v1/user/password",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"currentPassword\": \"old\",\n  \"newPassword\": \"new\"\n}", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Admin - List Users",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/user",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Admin - User Details",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/user/{{userId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Admin - Update User Status",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/user/{{userId}}/status",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"status\": \"active\" }", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Admin - Delete User",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/user/{{userId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin Dashboard",
+      "item": [
+        {
+          "name": "Dashboard Overview",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/admin/dashboard",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Exams",
+      "item": [
+        { "name": "List Active Exams", "request": { "method": "GET", "url": "{{base_url}}/api/v1/exam" } },
+        {
+          "name": "Admin - List All Exams",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/exam/all",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Admin - Create Exam",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/exam",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"API 570\",\n  \"effectivitySheetContent\": \"Effective Jan 2026\",\n  \"bodyOfKnowledgeContent\": \"BOK text\",\n  \"n_question\": 10,\n  \"durationMinutes\": 30\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - Update Exam",
+          "request": {
+            "method": "PUT",
+            "url": "{{base_url}}/api/v1/exam/{{examId}}",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"name\": \"Updated\" }", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Admin - Delete Exam",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/exam/{{examId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Start Exam",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/exam/{{examId}}/start",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"n_question\": 5,\n  \"recreate\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Submit Exam Answers",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/exam/{{examId}}/submit",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"answers\": [\"Option A\", [\"Option A\", \"Option C\"], \"True\"],\n  \"flaggedQuestionIds\": [\"q_1\"],\n  \"timeSpent\": [12, 25, 9]\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payments (PayPal exam unlock)",
+      "item": [
+        {
+          "name": "Create PayPal Order",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/payments/exam/{{examId}}/paypal/create",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Capture PayPal Order",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/payments/exam/{{examId}}/paypal/capture",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"orderId\": \"PAYPAL_ORDER_ID\" }", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Admin Revenue Summary",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/payments/admin/summary",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Admin Purchases List",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/payments/admin/purchases?page=1&limit=20",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analytics & History",
+      "item": [
+        {
+          "name": "Overview (me)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/analytics/me/overview",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Performance (me)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/analytics/me/performance?examId={{examId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "History - Attempts",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/analytics/history/attempts?page=1&limit=10",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "History - Attempt Details",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/analytics/history/attempts/{{attemptId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Announcements",
+      "item": [
+        { "name": "List Public Announcements", "request": { "method": "GET", "url": "{{base_url}}/api/v1/announcement" } },
+        {
+          "name": "Admin - List Announcements",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/announcement/all",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Admin - Create Announcement",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/announcement",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"message\": \"Welcome to the platform\" }", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Admin - Update Announcement Status",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/announcement/{{announcementId}}/status",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"status\": \"hidden\" }", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Admin - Delete Announcement",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/announcement/{{announcementId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Testimonials",
+      "item": [
+        { "name": "List Testimonials", "request": { "method": "GET", "url": "{{base_url}}/api/v1/testimonial" } },
+        {
+          "name": "Create Testimonial",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/testimonial",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"name\": \"John\", \"testimonial\": \"Great\", \"rating\": 5 }", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Update Testimonial",
+          "request": {
+            "method": "PUT",
+            "url": "{{base_url}}/api/v1/testimonial/{{testimonialId}}",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"testimonial\": \"Updated\" }", "options": { "raw": { "language": "json" } } }
+          }
+        },
+        {
+          "name": "Delete Testimonial",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/testimonial/{{testimonialId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        }
+      ]
+    }
+  ]
+}
