@@ -44,8 +44,11 @@ const globalErrorHandler = (err, req, res, next) => {
     success: false,
     message,
     errorSources,
-    err,
-    stack: err?.stack | null,
+    err: {
+      statusCode,
+      name: err?.name,
+    },
+    stack: process.env.NODE_ENV === "development" ? err?.stack : null,
   });
 };
 

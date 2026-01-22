@@ -7,6 +7,11 @@ const examSchema = new Schema(
       required: true,
       trim: true,
     },
+    durationMinutes: {
+      type: Number,
+      min: 1,
+      default: null,
+    },
     effectivitySheetContent: {
       type: String,
       default: "",
@@ -21,6 +26,11 @@ const examSchema = new Schema(
       type: String,
       enum: ["active", "inactive"],
       default: "active",
+    },
+    n_question: {
+      type: Number,
+      default: 1,
+      min: 1,
     },
     image: {
       public_id: { type: String, default: "" },
