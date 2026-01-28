@@ -29,16 +29,16 @@ export const getDashboardOverview = catchAsync(async (req, res) => {
   }
 
   // Unlock data
-  const unlockedUserIds = await ExamAccess.distinct("userId", {
-    status: "unlocked",
-    paymentStatus: "completed",
-  });
-  const unlockedSet = new Set(unlockedUserIds.map((id) => id.toString()));
-
   // Totals
   const totalUsers = await User.countDocuments({ role: "user" });
-  const totalProfessional = unlockedUserIds.length;
-  const totalStarter = Math.max(totalUsers - totalProfessional, 0);
+  const totalProfessional = await User.countDocuments({
+    role: "user",
+    subscriptionTier: "professional",
+  });
+  const totalStarter = await User.countDocuments({
+    role: "user",
+    subscriptionTier: "starter",
+  });
 
   // Revenue
   const [revenueAgg] = await ExamAccess.aggregate([
@@ -118,7 +118,7 @@ export const getDashboardOverview = catchAsync(async (req, res) => {
       email: u.email,
       joinedAt: u.createdAt,
       payable: spendMap[id] || 0,
-      plan: unlockedSet.has(id) ? "Professional" : "Starter",
+      plan: u.subscriptionTier === "professional" ? "Professional" : "Starter",
       status: u.status,
     };
   });

@@ -36,3 +36,31 @@ export const isUser = (req, res, next) => {
   }
   next();
 };
+
+export const requirePermission = (permission) => (req, res, next) => {
+  if (req.user?.role === "admin") return next();
+  if (req.user?.role !== "sub-admin") {
+    throw new AppError(403, "Access denied. Permission required.");
+  }
+  const permissions = Array.isArray(req.user?.subAdminPermissions)
+    ? req.user.subAdminPermissions
+    : [];
+  if (!permissions.includes(permission)) {
+    throw new AppError(403, "Access denied. Permission required.");
+  }
+  next();
+};
+
+export const requireAnyPermission = (permissions = []) => (req, res, next) => {
+  if (req.user?.role === "admin") return next();
+  if (req.user?.role !== "sub-admin") {
+    throw new AppError(403, "Access denied. Permission required.");
+  }
+  const current = Array.isArray(req.user?.subAdminPermissions)
+    ? req.user.subAdminPermissions
+    : [];
+  if (!permissions.some((p) => current.includes(p))) {
+    throw new AppError(403, "Access denied. Permission required.");
+  }
+  next();
+};

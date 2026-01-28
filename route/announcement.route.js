@@ -6,14 +6,14 @@ import {
   getPublicAnnouncements,
   updateAnnouncementStatus,
 } from "../controller/announcement.controller.js";
-import { isAdmin, protect } from "../middleware/auth.middleware.js";
+import { protect, requirePermission } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
 router.get("/", getPublicAnnouncements);
-router.get("/all", protect, isAdmin, getAnnouncementsAdmin);
-router.post("/", protect, isAdmin, createAnnouncement);
-router.patch("/:id/status", protect, isAdmin, updateAnnouncementStatus);
-router.delete("/:id", protect, isAdmin, deleteAnnouncement);
+router.get("/all", protect, requirePermission("manage_announcements"), getAnnouncementsAdmin);
+router.post("/", protect, requirePermission("manage_announcements"), createAnnouncement);
+router.patch("/:id/status", protect, requirePermission("manage_announcements"), updateAnnouncementStatus);
+router.delete("/:id", protect, requirePermission("manage_announcements"), deleteAnnouncement);
 
 export default router;

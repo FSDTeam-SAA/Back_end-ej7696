@@ -9,12 +9,17 @@ const examAccessSchema = new Schema(
       enum: ["free", "unlocked"],
       default: "free",
     },
+    purchaseType: {
+      type: String,
+      enum: ["exam", "plan", "manual"],
+      default: "exam",
+    },
     maxQuestionsPerSession: { type: Number, default: 2 },
     purchasePrice: { type: Number, default: 0 },
     paypalOrderId: { type: String, default: "" },
     paymentStatus: {
       type: String,
-      enum: ["pending", "completed", "failed", "refunded", "voided"],
+      enum: ["pending", "completed", "failed", "refunded", "voided", "manual"],
       default: "pending",
     },
     purchasedAt: { type: Date, default: null },

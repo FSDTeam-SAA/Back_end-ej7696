@@ -144,8 +144,17 @@ const userSchema = new Schema(
     },
     role: {
       type: String,
-      enum: ["user", "admin", "storeman"],
+      enum: ["user", "admin", "sub-admin", "storeman"],
       default: "user",
+    },
+    subAdminPermissions: {
+      type: [String],
+      default: [],
+    },
+    subscriptionTier: {
+      type: String,
+      enum: ["starter", "professional"],
+      default: "starter",
     },
     verificationInfo: {
       verified: { type: Boolean, default: false },
