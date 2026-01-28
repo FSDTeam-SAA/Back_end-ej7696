@@ -1,12 +1,29 @@
 import httpStatus from "http-status";
 import { User } from "../model/user.model.js";
-import { uploadOnCloudinary } from "../utils/commonMethod.js";
+import { generateOTP, uploadOnCloudinary } from "../utils/commonMethod.js";
 import AppError from "../errors/AppError.js";
 import sendResponse from "../utils/sendResponse.js";
 import catchAsync from "../utils/catchAsync.js";
+import { createToken } from "../utils/authToken.js";
+import { sendEmail } from "../utils/sendEmail.js";
 
 const safeUserSelect =
   "-password -refreshToken -verificationInfo -password_reset_token";
+
+const SUB_ADMIN_PERMISSIONS = [
+  "view_user_list",
+  "send_password_reset_email",
+  "suspend_users",
+  "manage_exams_questions",
+  "view_billing_summary",
+  "edit_user_profiles",
+  "manage_subscription",
+  "manage_announcements",
+  "access_performance_analytics",
+  "view_activity_logs",
+  "manual_exam_unlocks",
+  "credential_management",
+];
 
 const parseStatus = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -15,6 +32,46 @@ const parseStatus = (value) => {
     throw new AppError(httpStatus.BAD_REQUEST, "Status must be active or inactive");
   }
   return normalized;
+};
+
+const parseRole = (value) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const normalized = value.toString().toLowerCase();
+  if (!["user", "admin", "sub-admin", "storeman"].includes(normalized)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Role must be user, sub-admin, admin, or storeman"
+    );
+  }
+  return normalized;
+};
+
+const parseTier = (value) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const normalized = value.toString().toLowerCase();
+  if (!["starter", "professional"].includes(normalized)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Subscription tier must be starter or professional"
+    );
+  }
+  return normalized;
+};
+
+const parsePermissions = (value) => {
+  if (value === undefined || value === null) return undefined;
+  const raw = Array.isArray(value) ? value : [value];
+  const normalized = raw
+    .map((p) => p?.toString().trim().toLowerCase())
+    .filter(Boolean);
+  const invalid = normalized.filter((p) => !SUB_ADMIN_PERMISSIONS.includes(p));
+  if (invalid.length) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Invalid permissions: ${invalid.join(", ")}`
+    );
+  }
+  return [...new Set(normalized)];
 };
 
 const parseIfJson = (value, fieldName) => {
@@ -48,6 +105,10 @@ export const getUsers = catchAsync(async (req, res) => {
   const filter = {};
   const statusFilter = parseStatus(req.query.status);
   if (statusFilter) filter.status = statusFilter;
+  const roleFilter = parseRole(req.query.role);
+  if (roleFilter) filter.role = roleFilter;
+  const tierFilter = parseTier(req.query.tier);
+  if (tierFilter) filter.subscriptionTier = tierFilter;
 
   const [users, total] = await Promise.all([
     User.find(filter)
@@ -120,6 +181,109 @@ export const updateUserStatus = catchAsync(async (req, res) => {
     statusCode: httpStatus.OK,
     success: true,
     message: "User status updated",
+    data: sanitizedUser,
+  });
+});
+
+export const updateUserSubscription = catchAsync(async (req, res) => {
+  const tier = parseTier(req.body.subscriptionTier);
+  if (!tier) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Subscription tier is required");
+  }
+
+  const user = await User.findById(req.params.id);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  user.subscriptionTier = tier;
+  await user.save();
+
+  const sanitizedUser = await User.findById(req.params.id).select(safeUserSelect);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "User subscription updated",
+    data: sanitizedUser,
+  });
+});
+
+export const updateSubAdminPermissions = catchAsync(async (req, res) => {
+  const permissions = parsePermissions(req.body.permissions);
+  if (!permissions) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Permissions are required");
+  }
+
+  const user = await User.findById(req.params.id);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  if (user.role !== "sub-admin") {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Permissions can only be set for sub-admin users"
+    );
+  }
+
+  user.subAdminPermissions = permissions;
+  await user.save();
+
+  const sanitizedUser = await User.findById(req.params.id).select(safeUserSelect);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Sub-admin permissions updated",
+    data: sanitizedUser,
+  });
+});
+
+export const adminSendPasswordResetEmail = catchAsync(async (req, res) => {
+  const userId = req.params.id;
+  if (!userId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "User ID is required");
+  }
+
+  const user = await User.findById(userId).select("+password_reset_token");
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  const otp = generateOTP();
+  const otpToken = createToken(
+    { otp },
+    process.env.OTP_SECRET,
+    process.env.OTP_EXPIRE
+  );
+
+  user.password_reset_token = otpToken;
+  await user.save();
+
+  await sendEmail(user.email, "Reset Password", `Your OTP is ${otp}`);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Password reset email sent",
+    data: null,
+  });
+});
+
+export const adminSetTemporaryPassword = catchAsync(async (req, res) => {
+  const { password } = req.body;
+  if (!password) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Password is required");
+  }
+
+  const user = await User.findById(req.params.id).select("+password");
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  user.password = password;
+  await user.save();
+
+  const sanitizedUser = await User.findById(req.params.id).select(safeUserSelect);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Temporary password set",
     data: sanitizedUser,
   });
 });

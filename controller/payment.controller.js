@@ -5,13 +5,26 @@ import sendResponse from "../utils/sendResponse.js";
 import { Exam } from "../model/exam.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { User } from "../model/user.model.js";
+import { AppSetting } from "../model/appSetting.model.js";
 
 const PAYPAL_BASE_URL =
   process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com";
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID || "";
 const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET || "";
-const EXAM_PRICE = Number(process.env.EXAM_PRICE_PER_EXAM) || 150;
-const CURRENCY = process.env.EXAM_PRICE_CURRENCY || "USD";
+const DEFAULT_EXAM_PRICE = Number(process.env.EXAM_PRICE_PER_EXAM) || 150;
+const DEFAULT_PRO_PLAN_PRICE =
+  Number(process.env.PROFESSIONAL_PLAN_PRICE) || 180;
+const DEFAULT_CURRENCY = process.env.EXAM_PRICE_CURRENCY || "USD";
+
+const getPricing = async () => {
+  const settings = await AppSetting.findOne().lean();
+  return {
+    examUnlockPrice: settings?.examUnlockPrice ?? DEFAULT_EXAM_PRICE,
+    professionalPlanPrice:
+      settings?.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
+    currency: settings?.currency ?? DEFAULT_CURRENCY,
+  };
+};
 
 const getPayPalAccessToken = async () => {
   if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
@@ -58,6 +71,7 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
   }
 
   const token = await getPayPalAccessToken();
+  const pricing = await getPricing();
 
   const orderRes = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders`, {
     method: "POST",
@@ -70,8 +84,8 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
       purchase_units: [
         {
           amount: {
-            currency_code: CURRENCY,
-            value: EXAM_PRICE.toFixed(2),
+            currency_code: pricing.currency,
+            value: pricing.examUnlockPrice.toFixed(2),
           },
           description: `Unlock exam: ${exam.name}`,
         },
@@ -97,7 +111,8 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
       status: "free",
       paymentStatus: "pending",
       paypalOrderId: orderData.id,
-      purchasePrice: EXAM_PRICE,
+      purchaseType: "exam",
+      purchasePrice: pricing.examUnlockPrice,
       maxQuestionsPerSession: 2,
     },
     { upsert: true }
@@ -113,8 +128,8 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
     data: {
       orderId: orderData.id,
       approvalLink,
-      amount: EXAM_PRICE,
-      currency: CURRENCY,
+      amount: pricing.examUnlockPrice,
+      currency: pricing.currency,
     },
   });
 });
@@ -168,6 +183,8 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_GATEWAY, "PayPal capture not completed");
   }
 
+  const pricing = await getPricing();
+
   const updatedAccess = await ExamAccess.findOneAndUpdate(
     { userId, examId },
     {
@@ -176,7 +193,8 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
       status: "unlocked",
       paymentStatus: "completed",
       paypalOrderId: orderId,
-      purchasePrice: EXAM_PRICE,
+      purchaseType: "exam",
+      purchasePrice: pricing.examUnlockPrice,
       maxQuestionsPerSession: 20,
       purchasedAt: new Date(),
     },
@@ -191,6 +209,241 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
       unlocked: true,
       access: updatedAccess,
     },
+  });
+});
+
+export const createProfessionalPlanOrder = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  const { examId } = req.body;
+  if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
+
+  const user = await User.findById(userId);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  if (user.subscriptionTier === "professional") {
+    throw new AppError(httpStatus.BAD_REQUEST, "User already has professional plan");
+  }
+
+  const exam = await Exam.findById(examId).lean();
+  if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+
+  const existingAccess = await ExamAccess.findOne({ userId, examId });
+  if (existingAccess?.status === "unlocked") {
+    throw new AppError(httpStatus.BAD_REQUEST, "Exam already unlocked");
+  }
+
+  const token = await getPayPalAccessToken();
+  const pricing = await getPricing();
+
+  const orderRes = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      intent: "CAPTURE",
+      purchase_units: [
+        {
+          amount: {
+            currency_code: pricing.currency,
+            value: pricing.professionalPlanPrice.toFixed(2),
+          },
+          description: `Professional plan (includes unlock): ${exam.name}`,
+        },
+      ],
+      application_context: {
+        brand_name: "Professional Plan",
+        landing_page: "NO_PREFERENCE",
+        user_action: "PAY_NOW",
+      },
+    }),
+  });
+
+  const orderData = await orderRes.json().catch(() => null);
+  if (!orderRes.ok || !orderData?.id) {
+    throw new AppError(httpStatus.BAD_GATEWAY, "Failed to create PayPal order");
+  }
+
+  await ExamAccess.findOneAndUpdate(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      status: "free",
+      paymentStatus: "pending",
+      paypalOrderId: orderData.id,
+      purchaseType: "plan",
+      purchasePrice: pricing.professionalPlanPrice,
+      maxQuestionsPerSession: 2,
+    },
+    { upsert: true }
+  );
+
+  const approvalLink =
+    orderData.links?.find((l) => l.rel === "approve")?.href || null;
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Professional plan order created",
+    data: {
+      orderId: orderData.id,
+      approvalLink,
+      amount: pricing.professionalPlanPrice,
+      currency: pricing.currency,
+      examId,
+    },
+  });
+});
+
+export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  const { orderId } = req.body;
+  if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  if (!orderId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "orderId is required");
+  }
+
+  const accessDoc = await ExamAccess.findOne({ userId, paypalOrderId: orderId });
+  if (!accessDoc) {
+    throw new AppError(httpStatus.NOT_FOUND, "Pending plan order not found");
+  }
+
+  const token = await getPayPalAccessToken();
+  const captureRes = await fetch(
+    `${PAYPAL_BASE_URL}/v2/checkout/orders/${orderId}/capture`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  const captureData = await captureRes.json().catch(() => null);
+  if (!captureRes.ok) {
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      "Failed to capture PayPal order"
+    );
+  }
+
+  const purchaseState =
+    captureData?.status ||
+    captureData?.purchase_units?.[0]?.payments?.captures?.[0]?.status;
+
+  if (!["COMPLETED"].includes(purchaseState)) {
+    throw new AppError(httpStatus.BAD_GATEWAY, "PayPal capture not completed");
+  }
+
+  const pricing = await getPricing();
+
+  const updatedAccess = await ExamAccess.findOneAndUpdate(
+    { userId, paypalOrderId: orderId },
+    {
+      status: "unlocked",
+      paymentStatus: "completed",
+      purchaseType: "plan",
+      purchasePrice: pricing.professionalPlanPrice,
+      maxQuestionsPerSession: 20,
+      purchasedAt: new Date(),
+    },
+    { new: true }
+  );
+
+  await User.findByIdAndUpdate(userId, { subscriptionTier: "professional" });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Professional plan activated",
+    data: {
+      unlocked: true,
+      access: updatedAccess,
+      subscriptionTier: "professional",
+    },
+  });
+});
+
+export const manualUnlockExam = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const examId = req.params.examId;
+  if (!userId || !examId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId and examId are required");
+  }
+
+  const user = await User.findById(userId);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  const exam = await Exam.findById(examId).lean();
+  if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+
+  const updatedAccess = await ExamAccess.findOneAndUpdate(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      status: "unlocked",
+      paymentStatus: "manual",
+      purchaseType: "manual",
+      purchasePrice: 0,
+      maxQuestionsPerSession: 20,
+      purchasedAt: new Date(),
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam unlocked manually",
+    data: updatedAccess,
+  });
+});
+
+export const updatePricingSettings = catchAsync(async (req, res) => {
+  const updates = {};
+  if (req.body.professionalPlanPrice !== undefined) {
+    const price = Number(req.body.professionalPlanPrice);
+    if (Number.isNaN(price) || price <= 0) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "professionalPlanPrice must be a positive number"
+      );
+    }
+    updates.professionalPlanPrice = price;
+  }
+  if (req.body.examUnlockPrice !== undefined) {
+    const price = Number(req.body.examUnlockPrice);
+    if (Number.isNaN(price) || price <= 0) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "examUnlockPrice must be a positive number"
+      );
+    }
+    updates.examUnlockPrice = price;
+  }
+  if (req.body.currency !== undefined) {
+    const currency = req.body.currency?.toString().trim().toUpperCase();
+    if (!currency) {
+      throw new AppError(httpStatus.BAD_REQUEST, "currency is required");
+    }
+    updates.currency = currency;
+  }
+
+  const settings = await AppSetting.findOneAndUpdate({}, updates, {
+    upsert: true,
+    new: true,
+    setDefaultsOnInsert: true,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Pricing updated",
+    data: settings,
   });
 });
 
@@ -264,6 +517,7 @@ export const listPurchases = catchAsync(async (req, res) => {
   const filter = {};
   if (req.query.status) filter.status = req.query.status;
   if (req.query.paymentStatus) filter.paymentStatus = req.query.paymentStatus;
+  if (req.query.purchaseType) filter.purchaseType = req.query.purchaseType;
   if (req.query.examId) filter.examId = req.query.examId;
   if (req.query.userId) filter.userId = req.query.userId;
 
@@ -314,6 +568,7 @@ export const listPurchases = catchAsync(async (req, res) => {
         examName: examMap[i.examId?.toString()] || null,
         examId: i.examId,
         status: i.status,
+        purchaseType: i.purchaseType,
         paymentStatus: i.paymentStatus,
         price: i.purchasePrice,
         maxQuestionsPerSession: i.maxQuestionsPerSession,

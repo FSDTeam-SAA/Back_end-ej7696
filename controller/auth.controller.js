@@ -7,6 +7,18 @@ import sendResponse from "../utils/sendResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { User } from "./../model/user.model.js";
 
+const parseRole = (value) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const normalized = value.toString().toLowerCase();
+  if (!["user", "admin", "sub-admin", "storeman"].includes(normalized)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Role must be user, sub-admin, admin, or storeman"
+    );
+  }
+  return normalized;
+};
+
 export const register = catchAsync(async (req, res) => {
   const { phone, name, email, password, confirmPassword } = req.body;
 
@@ -32,6 +44,7 @@ export const register = catchAsync(async (req, res) => {
     name,
     email,
     password,
+    role: "user",
     verificationInfo: { token: "", verified: true },
   });
 
@@ -63,6 +76,28 @@ export const register = catchAsync(async (req, res) => {
     success: true,
     message: "User registered successfully",
     data: userObj,
+  });
+});
+
+export const updateUserRole = catchAsync(async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  if (req.body?.role === undefined) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Role is required");
+  }
+
+  user.role = parseRole(req.body.role);
+  if (user.role !== "sub-admin") {
+    user.subAdminPermissions = [];
+  }
+  await user.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "User role updated successfully",
+    data: user,
   });
 });
 
