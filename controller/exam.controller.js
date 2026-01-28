@@ -417,6 +417,25 @@ export const updateExam = catchAsync(async (req, res) => {
   });
 });
 
+export const updateExamStatus = catchAsync(async (req, res) => {
+  const exam = await Exam.findById(req.params.id);
+  if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+
+  if (req.body?.status === undefined) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Status is required");
+  }
+
+  exam.status = parseStatus(req.body.status);
+  await exam.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam status updated successfully",
+    data: sanitizeExam(exam),
+  });
+});
+
 export const deleteExam = catchAsync(async (req, res) => {
   const exam = await Exam.findById(req.params.id);
   if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
