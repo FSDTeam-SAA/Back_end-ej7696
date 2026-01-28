@@ -15,6 +15,8 @@ const QUESTION_SERVICE_URL =
   "https://ej7696.onrender.com/api/gen-question/";
 const QUESTION_SERVICE_TIMEOUT_MS =
   Number(process.env.QUESTION_SERVICE_TIMEOUT_MS) || 20000;
+const QUESTION_SERVICE_MODE =
+  process.env.QUESTION_SERVICE_MODE?.toLowerCase() || "form";
 
 const parseStatus = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -175,6 +177,7 @@ export const getAllExamsAdmin = catchAsync(async (req, res) => {
 export const startExam = catchAsync(async (req, res) => {
   const userId = req.user?._id?.toString();
   const examId = req.params.id || req.body.examId;
+  const exam_type = req.body.exam_type || req.query.exam_type || "standard";
 
   if (!userId) {
     throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
@@ -267,24 +270,46 @@ export const startExam = catchAsync(async (req, res) => {
     }
   }
 
-  const formData = new FormData();
-  formData.append("user_id", userId);
-  formData.append("exam_id", examId.toString());
-  formData.append("ex_name", exam.name);
-  formData.append("sheet_content", exam.effectivitySheetContent || "");
-  formData.append("knowledge_content", exam.bodyOfKnowledgeContent || "");
-  formData.append("n_question", effectiveQuestionCount.toString());
+  const questionPayload = {
+    ex_name: exam.name,
+    exam_type,
+    sheet_content: exam.effectivitySheetContent || "",
+    knowledge_content: exam.bodyOfKnowledgeContent || "",
+    n_question: effectiveQuestionCount,
+  };
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), QUESTION_SERVICE_TIMEOUT_MS);
-  let externalRes;
+  const sendQuestionRequest = async (useForm) => {
+    if (useForm) {
+      const params = new URLSearchParams();
+      params.append("ex_name", questionPayload.ex_name || "");
+      params.append("exam_type", questionPayload.exam_type || "");
+      params.append("sheet_content", questionPayload.sheet_content || "");
+      params.append("knowledge_content", questionPayload.knowledge_content || "");
+      params.append("n_question", questionPayload.n_question.toString());
 
-  try {
-    externalRes = await fetch(QUESTION_SERVICE_URL, {
+      return fetch(QUESTION_SERVICE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+        signal: controller.signal,
+      });
+    }
+
+    return fetch(QUESTION_SERVICE_URL, {
       method: "POST",
-      body: formData,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(questionPayload),
       signal: controller.signal,
     });
+  };
+
+  let externalRes;
+  let usedForm = QUESTION_SERVICE_MODE === "form";
+
+  try {
+    externalRes = await sendQuestionRequest(usedForm);
   } catch (error) {
     if (error.name === "AbortError") {
       throw new AppError(httpStatus.REQUEST_TIMEOUT, "Question service timed out");
@@ -295,21 +320,108 @@ export const startExam = catchAsync(async (req, res) => {
     clearTimeout(timeout);
   }
 
-  const result = await externalRes.json().catch(() => null);
-  if (!externalRes.ok || !result) {
+  const contentType = externalRes.headers.get("content-type") || "";
+  let result = null;
+  let rawText = null;
+
+  if (contentType.includes("application/json")) {
+    result = await externalRes.json().catch(() => null);
+  } else {
+    rawText = await externalRes.text().catch(() => null);
+    if (rawText) {
+      try {
+        result = JSON.parse(rawText);
+      } catch (err) {
+        result = null;
+      }
+    }
+  }
+
+  const missingFields =
+    result?.detail &&
+    Array.isArray(result.detail) &&
+    result.detail.some(
+      (item) =>
+        item?.type === "missing" &&
+        Array.isArray(item?.loc) &&
+        item.loc.includes("body")
+    );
+
+  const parsingError =
+    externalRes.status === 400 &&
+    (rawText?.includes("error parsing the body") ||
+      JSON.stringify(result || {}).includes("error parsing the body"));
+
+  if (
+    !externalRes.ok &&
+    (parsingError || (externalRes.status === 422 && missingFields)) &&
+    QUESTION_SERVICE_MODE !== "auto"
+  ) {
+    // Retry once with the opposite content type when body parsing fails.
+    try {
+      externalRes = await sendQuestionRequest(!usedForm);
+      usedForm = !usedForm;
+    } catch (error) {
+      if (error.name === "AbortError") {
+        throw new AppError(
+          httpStatus.REQUEST_TIMEOUT,
+          "Question service timed out"
+        );
+      }
+      throw new AppError(
+        httpStatus.BAD_GATEWAY,
+        "Failed to reach question service"
+      );
+    }
+
+    rawText = null;
+    result = null;
+    const retryContentType = externalRes.headers.get("content-type") || "";
+    if (retryContentType.includes("application/json")) {
+      result = await externalRes.json().catch(() => null);
+    } else {
+      rawText = await externalRes.text().catch(() => null);
+      if (rawText) {
+        try {
+          result = JSON.parse(rawText);
+        } catch (err) {
+          result = null;
+        }
+      }
+    }
+  }
+
+  if (!externalRes.ok) {
+    const snippet =
+      (rawText || (result ? JSON.stringify(result) : "")).slice(0, 500) || "";
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      `Question service error (${externalRes.status}). ${snippet}`.trim()
+    );
+  }
+
+  if (!result && !rawText) {
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      "Question service returned an empty response"
+    );
+  }
+
+  const payload = result?.text ?? result?.questions ?? result ?? rawText;
+  let parsedQuestions = payload;
+  if (typeof payload === "string") {
+    try {
+      parsedQuestions = JSON.parse(payload);
+    } catch (err) {
+      parsedQuestions = payload;
+    }
+  }
+
+  if (!parsedQuestions) {
     throw new AppError(
       httpStatus.BAD_GATEWAY,
       "Question service returned an unexpected response"
     );
-  }
-
-  let parsedQuestions = result.text;
-  if (typeof result.text === "string") {
-    try {
-      parsedQuestions = JSON.parse(result.text);
-    } catch (err) {
-      parsedQuestions = result.text;
-    }
   }
 
   const startTime = new Date();
@@ -330,8 +442,8 @@ export const startExam = catchAsync(async (req, res) => {
       durationMinutes,
       startTime,
       endTime,
-      status: result.status,
-      statusCode: result.status_code,
+      status: result?.status ?? "success",
+      statusCode: result?.status_code ?? externalRes.status,
       questions: parsedQuestions,
       rawResponse: result,
     },
@@ -364,8 +476,8 @@ export const startExam = catchAsync(async (req, res) => {
     success: true,
     message: "Exam started and questions fetched",
     data: {
-      status: result.status,
-      statusCode: result.status_code,
+      status: result?.status ?? "success",
+      statusCode: result?.status_code ?? externalRes.status,
       questions: cacheDoc.questions,
       startTime: cacheDoc.startTime,
       endTime: cacheDoc.endTime,
