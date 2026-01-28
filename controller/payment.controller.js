@@ -324,6 +324,7 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
 
   const captureData = await captureRes.json().catch(() => null);
   if (!captureRes.ok) {
+    console.log(captureData)
     throw new AppError(
       httpStatus.BAD_GATEWAY,
       "Failed to capture PayPal order"
