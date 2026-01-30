@@ -8,6 +8,7 @@ import announcementRoute from "../route/announcement.route.js";
 import analyticsRoute from "../route/analytics.route.js";
 import paymentRoute from "../route/payment.route.js";
 import adminRoute from "../route/admin.route.js";
+import supportRoute from "../route/support.route.js";
 
 const router = express.Router();
 
@@ -20,5 +21,6 @@ router.use("/announcement", announcementRoute);
 router.use("/analytics", analyticsRoute);
 router.use("/payments", paymentRoute);
 router.use("/admin", adminRoute);
+router.use("/support", supportRoute);
 
 export default router;

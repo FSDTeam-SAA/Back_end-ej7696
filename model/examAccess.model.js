@@ -17,6 +17,7 @@ const examAccessSchema = new Schema(
     maxQuestionsPerSession: { type: Number, default: 2 },
     purchasePrice: { type: Number, default: 0 },
     paypalOrderId: { type: String, default: "" },
+    stripePaymentIntentId: { type: String, default: "" },
     paymentStatus: {
       type: String,
       enum: ["pending", "completed", "failed", "refunded", "voided", "manual"],
