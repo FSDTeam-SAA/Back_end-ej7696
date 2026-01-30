@@ -6,6 +6,7 @@ import { Exam } from "../model/exam.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { User } from "../model/user.model.js";
 import { AppSetting } from "../model/appSetting.model.js";
+import Stripe from "stripe";
 
 const PAYPAL_BASE_URL =
   process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com";
@@ -15,6 +16,26 @@ const DEFAULT_EXAM_PRICE = Number(process.env.EXAM_PRICE_PER_EXAM) || 150;
 const DEFAULT_PRO_PLAN_PRICE =
   Number(process.env.PROFESSIONAL_PLAN_PRICE) || 180;
 const DEFAULT_CURRENCY = process.env.EXAM_PRICE_CURRENCY || "USD";
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
+
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "BIF",
+  "CLP",
+  "DJF",
+  "GNF",
+  "JPY",
+  "KMF",
+  "KRW",
+  "MGA",
+  "PYG",
+  "RWF",
+  "UGX",
+  "VND",
+  "VUV",
+  "XAF",
+  "XOF",
+  "XPF",
+]);
 
 const getPricing = async () => {
   const settings = await AppSetting.findOne().lean();
@@ -24,6 +45,24 @@ const getPricing = async () => {
       settings?.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
     currency: settings?.currency ?? DEFAULT_CURRENCY,
   };
+};
+
+const getStripeClient = () => {
+  if (!STRIPE_SECRET_KEY) {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      "Stripe credentials not configured"
+    );
+  }
+  return new Stripe(STRIPE_SECRET_KEY);
+};
+
+const toStripeAmount = (amount, currency) => {
+  const normalized = currency?.toString().trim().toUpperCase() || "USD";
+  if (ZERO_DECIMAL_CURRENCIES.has(normalized)) {
+    return Math.round(amount);
+  }
+  return Math.round(amount * 100);
 };
 
 const getPayPalAccessToken = async () => {
@@ -50,6 +89,273 @@ const getPayPalAccessToken = async () => {
   }
   return data.access_token;
 };
+
+export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  const examId = req.params.examId;
+  if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
+
+  const exam = await Exam.findById(examId).lean();
+  if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+
+  const existingAccess = await ExamAccess.findOne({ userId, examId });
+  if (existingAccess?.status === "unlocked") {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Exam already unlocked",
+      data: { unlocked: true },
+    });
+  }
+
+  const pricing = await getPricing();
+  const stripe = getStripeClient();
+  const stripeCurrency = pricing.currency.toLowerCase();
+  const amount = toStripeAmount(pricing.examUnlockPrice, pricing.currency);
+
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount,
+    currency: stripeCurrency,
+    description: `Unlock exam: ${exam.name}`,
+    metadata: {
+      userId: userId.toString(),
+      examId: examId.toString(),
+      purchaseType: "exam",
+    },
+  });
+
+  await ExamAccess.findOneAndUpdate(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      status: "free",
+      paymentStatus: "pending",
+      stripePaymentIntentId: paymentIntent.id,
+      purchaseType: "exam",
+      purchasePrice: pricing.examUnlockPrice,
+      maxQuestionsPerSession: 2,
+    },
+    { upsert: true }
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Stripe payment intent created",
+    data: {
+      paymentIntentId: paymentIntent.id,
+      clientSecret: paymentIntent.client_secret,
+      amount: pricing.examUnlockPrice,
+      currency: stripeCurrency,
+    },
+  });
+});
+
+export const confirmExamStripePayment = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  const examId = req.params.examId;
+  const { paymentIntentId } = req.body;
+
+  if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  if (!examId || !paymentIntentId) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "examId and paymentIntentId are required"
+    );
+  }
+
+  const accessDoc = await ExamAccess.findOne({ userId, examId });
+  if (accessDoc?.status === "unlocked") {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Exam already unlocked",
+      data: { unlocked: true },
+    });
+  }
+
+  const stripe = getStripeClient();
+  const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+  if (paymentIntent?.metadata?.examId !== examId.toString()) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Payment intent does not match exam");
+  }
+  if (paymentIntent?.metadata?.userId !== userId.toString()) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Payment intent does not match user");
+  }
+
+  if (paymentIntent.status !== "succeeded") {
+    throw new AppError(httpStatus.BAD_GATEWAY, "Stripe payment not completed");
+  }
+
+  const pricing = await getPricing();
+
+  const updatedAccess = await ExamAccess.findOneAndUpdate(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      status: "unlocked",
+      paymentStatus: "completed",
+      stripePaymentIntentId: paymentIntentId,
+      purchaseType: "exam",
+      purchasePrice: pricing.examUnlockPrice,
+      maxQuestionsPerSession: 20,
+      purchasedAt: new Date(),
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam unlocked",
+    data: {
+      unlocked: true,
+      access: updatedAccess,
+    },
+  });
+});
+
+export const createProfessionalPlanStripePaymentIntent = catchAsync(
+  async (req, res) => {
+    const userId = req.user?._id;
+    const { examId } = req.body;
+    if (!userId) {
+      throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+    }
+    if (!examId) {
+      throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
+    }
+
+    const user = await User.findById(userId);
+    if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+    if (user.subscriptionTier === "professional") {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "User already has professional plan"
+      );
+    }
+
+    const exam = await Exam.findById(examId).lean();
+    if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+
+    const existingAccess = await ExamAccess.findOne({ userId, examId });
+    if (existingAccess?.status === "unlocked") {
+      throw new AppError(httpStatus.BAD_REQUEST, "Exam already unlocked");
+    }
+
+    const pricing = await getPricing();
+    const stripe = getStripeClient();
+    const stripeCurrency = pricing.currency.toLowerCase();
+    const amount = toStripeAmount(
+      pricing.professionalPlanPrice,
+      pricing.currency
+    );
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount,
+      currency: stripeCurrency,
+      description: `Professional plan (includes unlock): ${exam.name}`,
+      metadata: {
+        userId: userId.toString(),
+        examId: examId.toString(),
+        purchaseType: "plan",
+      },
+    });
+
+    await ExamAccess.findOneAndUpdate(
+      { userId, examId },
+      {
+        userId,
+        examId,
+        status: "free",
+        paymentStatus: "pending",
+        stripePaymentIntentId: paymentIntent.id,
+        purchaseType: "plan",
+        purchasePrice: pricing.professionalPlanPrice,
+        maxQuestionsPerSession: 2,
+      },
+      { upsert: true }
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Professional plan payment intent created",
+      data: {
+        paymentIntentId: paymentIntent.id,
+        clientSecret: paymentIntent.client_secret,
+        amount: pricing.professionalPlanPrice,
+        currency: stripeCurrency,
+        examId,
+      },
+    });
+  }
+);
+
+export const confirmProfessionalPlanStripePayment = catchAsync(
+  async (req, res) => {
+    const userId = req.user?._id;
+    const { paymentIntentId } = req.body;
+    if (!userId) {
+      throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+    }
+    if (!paymentIntentId) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "paymentIntentId is required"
+      );
+    }
+
+    const stripe = getStripeClient();
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent?.metadata?.userId !== userId.toString()) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Payment intent does not match user");
+    }
+
+    if (paymentIntent.status !== "succeeded") {
+      throw new AppError(httpStatus.BAD_GATEWAY, "Stripe payment not completed");
+    }
+
+    const examId = paymentIntent?.metadata?.examId;
+    if (!examId) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Payment intent missing examId");
+    }
+
+    const pricing = await getPricing();
+
+    const updatedAccess = await ExamAccess.findOneAndUpdate(
+      { userId, examId },
+      {
+        status: "unlocked",
+        paymentStatus: "completed",
+        stripePaymentIntentId: paymentIntentId,
+        purchaseType: "plan",
+        purchasePrice: pricing.professionalPlanPrice,
+        maxQuestionsPerSession: 20,
+        purchasedAt: new Date(),
+      },
+      { new: true }
+    );
+
+    await User.findByIdAndUpdate(userId, { subscriptionTier: "professional" });
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Professional plan activated",
+      data: {
+        unlocked: true,
+        access: updatedAccess,
+        subscriptionTier: "professional",
+      },
+    });
+  }
+);
 
 export const createExamPayPalOrder = catchAsync(async (req, res) => {
   const userId = req.user?._id;
