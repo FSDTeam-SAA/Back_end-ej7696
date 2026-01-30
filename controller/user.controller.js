@@ -1,5 +1,7 @@
 import httpStatus from "http-status";
 import { User } from "../model/user.model.js";
+import { ExamAccess } from "../model/examAccess.model.js";
+import { Exam } from "../model/exam.model.js";
 import { generateOTP, uploadOnCloudinary } from "../utils/commonMethod.js";
 import AppError from "../errors/AppError.js";
 import sendResponse from "../utils/sendResponse.js";
@@ -115,18 +117,62 @@ export const getUsers = catchAsync(async (req, res) => {
       .select(safeUserSelect)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit),
+      .limit(limit)
+      .lean(),
     User.countDocuments(filter),
   ]);
 
   const totalPages = Math.ceil(total / limit) || 1;
+
+  const userIds = users.map((u) => u._id);
+  const accesses = userIds.length
+    ? await ExamAccess.find({
+        userId: { $in: userIds },
+        status: "unlocked",
+      }).lean()
+    : [];
+
+  const examIds = [
+    ...new Set(accesses.map((access) => access.examId?.toString()).filter(Boolean)),
+  ];
+
+  const exams = examIds.length
+    ? await Exam.find({ _id: { $in: examIds } }).select("name").lean()
+    : [];
+
+  const examMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const unlockedMap = accesses.reduce((acc, access) => {
+    const key = access.userId.toString();
+    if (!acc[key]) acc[key] = [];
+    acc[key].push({
+      examId: access.examId,
+      examName: examMap[access.examId?.toString()] || null,
+      purchaseType: access.purchaseType || null,
+      paymentStatus: access.paymentStatus || null,
+      purchasedAt: access.purchasedAt || null,
+    });
+    return acc;
+  }, {});
+
+  const enrichedUsers = users.map((user) => {
+    const unlockedExams = unlockedMap[user._id.toString()] || [];
+    return {
+      ...user,
+      unlockedExams,
+      unlockedExamCount: unlockedExams.length,
+    };
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Users fetched",
     data: {
-      users,
+      users: enrichedUsers,
       meta: {
         page,
         limit,
@@ -138,15 +184,43 @@ export const getUsers = catchAsync(async (req, res) => {
 });
 
 export const getUserDetails = catchAsync(async (req, res) => {
-  const user = await User.findById(req.params.id).select(safeUserSelect);
+  const user = await User.findById(req.params.id).select(safeUserSelect).lean();
 
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  const accesses = await ExamAccess.find({
+    userId: user._id,
+    status: "unlocked",
+  }).lean();
+
+  const examIds = [
+    ...new Set(accesses.map((access) => access.examId?.toString()).filter(Boolean)),
+  ];
+  const exams = examIds.length
+    ? await Exam.find({ _id: { $in: examIds } }).select("name").lean()
+    : [];
+  const examMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const unlockedExams = accesses.map((access) => ({
+    examId: access.examId,
+    examName: examMap[access.examId?.toString()] || null,
+    purchaseType: access.purchaseType || null,
+    paymentStatus: access.paymentStatus || null,
+    purchasedAt: access.purchasedAt || null,
+  }));
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "User details fetched",
-    data: user,
+    data: {
+      ...user,
+      unlockedExams,
+      unlockedExamCount: unlockedExams.length,
+    },
   });
 });
 

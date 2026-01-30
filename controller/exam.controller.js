@@ -9,6 +9,7 @@ import { ExamQuestionCache } from "../model/examQuestionCache.model.js";
 import { ExamAttempt } from "../model/examAttempt.model.js";
 import { QuestionUsage } from "../model/questionUsage.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
+import { AppSetting } from "../model/appSetting.model.js";
 
 const QUESTION_SERVICE_URL =
   process.env.QUESTION_SERVICE_URL ||
@@ -145,11 +146,55 @@ export const createExam = catchAsync(async (req, res) => {
 });
 
 export const getActiveExams = catchAsync(async (req, res) => {
+  const settings = await AppSetting.findOne().lean();
+  const unlockPrice = settings?.examUnlockPrice ?? 150;
+  const currency = settings?.currency ?? "USD";
+
   const data = await listExams(
     { status: "active" },
     req.query.page,
     req.query.limit
   );
+
+  if (req.user?._id) {
+    const userId = req.user._id.toString();
+    const examIds = data.exams.map((exam) => exam._id);
+
+    const accesses = await ExamAccess.find({
+      userId,
+      examId: { $in: examIds },
+    }).lean();
+
+    const accessMap = accesses.reduce((acc, access) => {
+      acc[access.examId.toString()] = access;
+      return acc;
+    }, {});
+
+
+    data.exams = data.exams.map((exam) => {
+      const access = accessMap[exam._id.toString()];
+      const isUnlocked = access?.status === "unlocked";
+      return {
+        ...exam,
+        unlockPrice,
+        currency,
+        unlocked: Boolean(isUnlocked),
+        accessStatus: access?.status || "free",
+        purchaseType: access?.purchaseType || null,
+        paymentStatus: access?.paymentStatus || null,
+      };
+    });
+  } else {
+    data.exams = data.exams.map((exam) => ({
+      ...exam,
+      unlockPrice,
+      currency,
+      unlocked: false,
+      accessStatus: "free",
+      purchaseType: null,
+      paymentStatus: null,
+    }));
+  }
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
