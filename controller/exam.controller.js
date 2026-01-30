@@ -15,9 +15,13 @@ const QUESTION_SERVICE_URL =
   process.env.QUESTION_SERVICE_URL ||
   "https://ej7696.onrender.com/api/gen-question/";
 const QUESTION_SERVICE_TIMEOUT_MS =
-  Number(process.env.QUESTION_SERVICE_TIMEOUT_MS) || 20000;
+  Number(process.env.QUESTION_SERVICE_TIMEOUT_MS) || 30000;
 const QUESTION_SERVICE_MODE =
   process.env.QUESTION_SERVICE_MODE?.toLowerCase() || "form";
+const QUESTION_SERVICE_RETRY_COUNT =
+  Number(process.env.QUESTION_SERVICE_RETRY_COUNT) || 1;
+const QUESTION_SERVICE_RETRY_DELAY_MS =
+  Number(process.env.QUESTION_SERVICE_RETRY_DELAY_MS) || 800;
 
 const parseStatus = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -323,9 +327,13 @@ export const startExam = catchAsync(async (req, res) => {
     n_question: effectiveQuestionCount,
   };
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), QUESTION_SERVICE_TIMEOUT_MS);
-  const sendQuestionRequest = async (useForm) => {
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const sendQuestionRequest = async (useForm, attempt) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      QUESTION_SERVICE_TIMEOUT_MS
+    );
     if (useForm) {
       const params = new URLSearchParams();
       params.append("ex_name", questionPayload.ex_name || "");
@@ -334,35 +342,60 @@ export const startExam = catchAsync(async (req, res) => {
       params.append("knowledge_content", questionPayload.knowledge_content || "");
       params.append("n_question", questionPayload.n_question.toString());
 
-      return fetch(QUESTION_SERVICE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: params.toString(),
-        signal: controller.signal,
-      });
+      try {
+        return await fetch(QUESTION_SERVICE_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: params.toString(),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
     }
 
-    return fetch(QUESTION_SERVICE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(questionPayload),
-      signal: controller.signal,
-    });
+    try {
+      return await fetch(QUESTION_SERVICE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(questionPayload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   };
 
   let externalRes;
   let usedForm = QUESTION_SERVICE_MODE === "form";
 
   try {
-    externalRes = await sendQuestionRequest(usedForm);
+    let attempt = 0;
+    while (attempt <= QUESTION_SERVICE_RETRY_COUNT) {
+      try {
+        externalRes = await sendQuestionRequest(usedForm, attempt);
+        break;
+      } catch (error) {
+        if (error.name === "AbortError") {
+          if (attempt >= QUESTION_SERVICE_RETRY_COUNT) {
+            throw new AppError(
+              httpStatus.REQUEST_TIMEOUT,
+              "Question service timed out"
+            );
+          }
+          await delay(QUESTION_SERVICE_RETRY_DELAY_MS);
+          attempt += 1;
+          continue;
+        }
+        throw error;
+      }
+    }
   } catch (error) {
     if (error.name === "AbortError") {
       throw new AppError(httpStatus.REQUEST_TIMEOUT, "Question service timed out");
     }
 
     throw new AppError(httpStatus.BAD_GATEWAY, "Failed to reach question service");
-  } finally {
-    clearTimeout(timeout);
   }
 
   const contentType = externalRes.headers.get("content-type") || "";
@@ -404,8 +437,27 @@ export const startExam = catchAsync(async (req, res) => {
   ) {
     // Retry once with the opposite content type when body parsing fails.
     try {
-      externalRes = await sendQuestionRequest(!usedForm);
-      usedForm = !usedForm;
+      let attempt = 0;
+      while (attempt <= QUESTION_SERVICE_RETRY_COUNT) {
+        try {
+          externalRes = await sendQuestionRequest(!usedForm, attempt);
+          usedForm = !usedForm;
+          break;
+        } catch (error) {
+          if (error.name === "AbortError") {
+            if (attempt >= QUESTION_SERVICE_RETRY_COUNT) {
+              throw new AppError(
+                httpStatus.REQUEST_TIMEOUT,
+                "Question service timed out"
+              );
+            }
+            await delay(QUESTION_SERVICE_RETRY_DELAY_MS);
+            attempt += 1;
+            continue;
+          }
+          throw error;
+        }
+      }
     } catch (error) {
       if (error.name === "AbortError") {
         throw new AppError(
