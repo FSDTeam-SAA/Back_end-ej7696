@@ -9,12 +9,12 @@ import {
   updateExam,
   updateExamStatus,
 } from "../controller/exam.controller.js";
-import { protect, requirePermission } from "../middleware/auth.middleware.js";
+import { optionalProtect, protect, requirePermission } from "../middleware/auth.middleware.js";
 import upload from "../middleware/multer.middleware.js";
 
 const router = express.Router();
 
-router.get("/", getActiveExams);
+router.get("/", optionalProtect, getActiveExams);
 router.get("/all", protect, requirePermission("manage_exams_questions"), getAllExamsAdmin);
 router.post("/:id/start", protect, startExam);
 router.get("/:id/start", protect, startExam);

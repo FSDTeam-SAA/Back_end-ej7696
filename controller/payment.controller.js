@@ -16,6 +16,18 @@ const DEFAULT_EXAM_PRICE = Number(process.env.EXAM_PRICE_PER_EXAM) || 150;
 const DEFAULT_PRO_PLAN_PRICE =
   Number(process.env.PROFESSIONAL_PLAN_PRICE) || 180;
 const DEFAULT_CURRENCY = process.env.EXAM_PRICE_CURRENCY || "USD";
+const DEFAULT_PRO_PLAN_INTERVAL_COUNT = 3;
+const DEFAULT_PRO_PLAN_INTERVAL_UNIT = "months";
+const DEFAULT_PRO_PLAN_DESCRIPTION = "What's included in your plan";
+const DEFAULT_PRO_PLAN_FEATURES = [
+  "Access to selected free exams",
+  "Full-length mock exams",
+  "Timed & full simulation modes",
+  "Interactive study mode",
+  "Progress tracking, performance dashboard & exam history",
+  "Detailed explanations with code references",
+  "All smart study tools",
+];
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
 
 const ZERO_DECIMAL_CURRENCIES = new Set([
@@ -44,6 +56,20 @@ const getPricing = async () => {
     professionalPlanPrice:
       settings?.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
     currency: settings?.currency ?? DEFAULT_CURRENCY,
+  };
+};
+
+const getPlanSettings = async () => {
+  const settings = await AppSetting.findOne().lean();
+  return {
+    professionalPlanIntervalCount:
+      settings?.professionalPlanIntervalCount ?? DEFAULT_PRO_PLAN_INTERVAL_COUNT,
+    professionalPlanIntervalUnit:
+      settings?.professionalPlanIntervalUnit ?? DEFAULT_PRO_PLAN_INTERVAL_UNIT,
+    professionalPlanDescription:
+      settings?.professionalPlanDescription ?? DEFAULT_PRO_PLAN_DESCRIPTION,
+    professionalPlanFeatures:
+      settings?.professionalPlanFeatures ?? DEFAULT_PRO_PLAN_FEATURES,
   };
 };
 
@@ -739,6 +765,67 @@ export const updatePricingSettings = catchAsync(async (req, res) => {
     }
     updates.currency = currency;
   }
+  if (req.body.professionalPlanIntervalCount !== undefined) {
+    const count = Number(req.body.professionalPlanIntervalCount);
+    if (Number.isNaN(count) || count <= 0) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "professionalPlanIntervalCount must be a positive number"
+      );
+    }
+    updates.professionalPlanIntervalCount = Math.ceil(count);
+  }
+  if (req.body.professionalPlanIntervalUnit !== undefined) {
+    const unit = req.body.professionalPlanIntervalUnit
+      ?.toString()
+      .trim()
+      .toLowerCase();
+    if (!unit) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "professionalPlanIntervalUnit is required"
+      );
+    }
+    updates.professionalPlanIntervalUnit = unit;
+  }
+  if (req.body.professionalPlanDescription !== undefined) {
+    const description = req.body.professionalPlanDescription
+      ?.toString()
+      .trim();
+    if (!description) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "professionalPlanDescription is required"
+      );
+    }
+    updates.professionalPlanDescription = description;
+  }
+  if (req.body.professionalPlanFeatures !== undefined) {
+    const raw = req.body.professionalPlanFeatures;
+    let parsed = [];
+    if (typeof raw === "string") {
+      try {
+        parsed = JSON.parse(raw);
+      } catch (error) {
+        throw new AppError(
+          httpStatus.BAD_REQUEST,
+          "professionalPlanFeatures must be valid JSON"
+        );
+      }
+    } else if (Array.isArray(raw)) {
+      parsed = raw;
+    }
+    const features = parsed
+      .map((item) => item?.toString().trim())
+      .filter(Boolean);
+    if (!features.length) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "professionalPlanFeatures must be a non-empty array"
+      );
+    }
+    updates.professionalPlanFeatures = features;
+  }
 
   const settings = await AppSetting.findOneAndUpdate({}, updates, {
     upsert: true,
@@ -751,6 +838,56 @@ export const updatePricingSettings = catchAsync(async (req, res) => {
     success: true,
     message: "Pricing updated",
     data: settings,
+  });
+});
+
+export const getPricingSettings = catchAsync(async (req, res) => {
+  const pricing = await getPricing();
+  const plan = await getPlanSettings();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Pricing settings fetched",
+    data: {
+      ...pricing,
+      ...plan,
+    },
+  });
+});
+
+export const getProfessionalPlan = catchAsync(async (req, res) => {
+  const settings = await AppSetting.findOne().lean();
+  const price = settings?.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE;
+  const currency = settings?.currency ?? DEFAULT_CURRENCY;
+  const intervalCount =
+    settings?.professionalPlanIntervalCount ?? DEFAULT_PRO_PLAN_INTERVAL_COUNT;
+  const intervalUnit =
+    settings?.professionalPlanIntervalUnit ?? DEFAULT_PRO_PLAN_INTERVAL_UNIT;
+  const description =
+    settings?.professionalPlanDescription ?? DEFAULT_PRO_PLAN_DESCRIPTION;
+  const features =
+    settings?.professionalPlanFeatures ?? DEFAULT_PRO_PLAN_FEATURES;
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Professional plan fetched",
+    data: {
+      plan: {
+        id: "professional",
+        name: "Professional Plan",
+        price,
+        currency,
+        interval: {
+          count: intervalCount,
+          unit: intervalUnit,
+          label: `${intervalCount} ${intervalUnit}`,
+        },
+        description,
+        features,
+      },
+    },
   });
 });
 

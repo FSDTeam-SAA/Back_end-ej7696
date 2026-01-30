@@ -23,6 +23,25 @@ export const protect = async (req, res, next) => {
   }
 };
 
+export const optionalProtect = async (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return next();
+
+  try {
+    const decoded = await jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+    const user = await User.findById(decoded._id);
+    if (user && (await User.isOTPVerified(user._id))) {
+      if (user.status !== "active") {
+        throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
+      }
+      req.user = user;
+    }
+    return next();
+  } catch (err) {
+    throw new AppError(401, "Invalid token");
+  }
+};
+
 export const isAdmin = (req, res, next) => {
   if (req.user?.role !== "admin") {
     throw new AppError(403, "Access denied. You are not an admin.");
