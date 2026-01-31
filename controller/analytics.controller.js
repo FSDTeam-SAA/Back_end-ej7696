@@ -4,6 +4,8 @@ import catchAsync from "../utils/catchAsync.js";
 import sendResponse from "../utils/sendResponse.js";
 import { ExamAttempt } from "../model/examAttempt.model.js";
 import { Exam } from "../model/exam.model.js";
+import { ExamQuestionCache } from "../model/examQuestionCache.model.js";
+import mongoose from "mongoose";
 
 const buildDateRangeFilter = (from, to) => {
   const filter = {};
@@ -159,17 +161,183 @@ export const getAttemptDetails = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
 
+  const { attemptId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(attemptId)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid attempt id");
+  }
+
+  const extractQuestionId = (q, index) =>
+    q?._id?.toString() ||
+    q?.id?.toString() ||
+    q?.questionId?.toString() ||
+    `q_${index}`;
+
+  const extractCorrectOptions = (question) => {
+    if (!question) return null;
+    if (Array.isArray(question.options)) {
+      const options = question.options
+        .filter((opt) => opt?.is_correct)
+        .map((opt) => opt.option ?? opt.value ?? opt.text)
+        .filter((opt) => opt !== undefined && opt !== null);
+      return options.length ? options : null;
+    }
+    if (question.correctAnswer !== undefined && question.correctAnswer !== null) {
+      return question.correctAnswer;
+    }
+    if (question.answer !== undefined && question.answer !== null) {
+      return question.answer;
+    }
+    return null;
+  };
+
   const attempt = await ExamAttempt.findOne({
-    _id: req.params.attemptId,
+    _id: attemptId,
     userId,
-  }).lean();
+  })
+    .populate("examId", "name durationMinutes")
+    .lean();
 
   if (!attempt) throw new AppError(httpStatus.NOT_FOUND, "Attempt not found");
+
+  const normalizeReviewData = (reviewData, answers = []) => {
+    const result = { topicBreakdown: [], answers: [] };
+
+    if (!reviewData) {
+      result.answers = Array.isArray(answers)
+        ? answers.map((a) => ({
+            questionId: a.questionId ?? null,
+            userAnswer: a.selectedKey ?? null,
+            isCorrect: typeof a.isCorrect === "boolean" ? a.isCorrect : null,
+            timeSpentSec: a.timeSpentSec ?? 0,
+          }))
+        : [];
+      return result;
+    }
+
+    if (Array.isArray(reviewData.topicBreakdown)) {
+      result.topicBreakdown = reviewData.topicBreakdown;
+    }
+
+    const mapAnswer = (entry) => ({
+      questionId: entry?.questionId ?? entry?.id ?? entry?._id ?? null,
+      question: entry?.question ?? entry?.text ?? "",
+      category: entry?.category ?? entry?.topic ?? entry?.section ?? null,
+      userAnswer:
+        entry?.userAnswer ??
+        entry?.selectedKey ??
+        entry?.submitted ??
+        entry?.answer ??
+        null,
+      correctAnswer:
+        entry?.correctAnswer ??
+        entry?.correctOptions ??
+        entry?.correct ??
+        entry?.expected ??
+        null,
+      isCorrect:
+        typeof entry?.isCorrect === "boolean" ? entry.isCorrect : null,
+      timeSpentSec: entry?.timeSpentSec ?? entry?.timeSpent ?? 0,
+    });
+
+    if (Array.isArray(reviewData.answers)) {
+      result.answers = reviewData.answers.map(mapAnswer);
+    } else if (Array.isArray(reviewData.questions)) {
+      result.answers = reviewData.questions.map(mapAnswer);
+    } else if (Array.isArray(reviewData.details)) {
+      result.answers = reviewData.details.map(mapAnswer);
+    }
+
+    if (!result.answers.length && Array.isArray(answers)) {
+      result.answers = answers.map((a) => ({
+        questionId: a.questionId ?? null,
+        userAnswer: a.selectedKey ?? null,
+        correctAnswer: a.correctAnswer ?? null,
+        isCorrect: typeof a.isCorrect === "boolean" ? a.isCorrect : null,
+        timeSpentSec: a.timeSpentSec ?? 0,
+      }));
+    }
+
+    if (!result.topicBreakdown.length && result.answers.length) {
+      const breakdownMap = new Map();
+      result.answers.forEach((a) => {
+        const category = a.category;
+        if (!category) return;
+        if (!breakdownMap.has(category)) {
+          breakdownMap.set(category, {
+            category,
+            correct: 0,
+            incorrect: 0,
+            total: 0,
+            accuracy: 0,
+          });
+        }
+        if (typeof a.isCorrect !== "boolean") return;
+        const entry = breakdownMap.get(category);
+        entry.total += 1;
+        if (a.isCorrect) entry.correct += 1;
+        else entry.incorrect += 1;
+      });
+      result.topicBreakdown = Array.from(breakdownMap.values()).map((entry) => ({
+        ...entry,
+        accuracy:
+          entry.total > 0
+            ? Number(((entry.correct / entry.total) * 100).toFixed(2))
+            : 0,
+      }));
+    }
+
+    return result;
+  };
+
+  const review = normalizeReviewData(attempt.reviewData, attempt.answers);
+  const needsCorrectAnswer = review.answers.some(
+    (a) => a.correctAnswer === null || a.correctAnswer === undefined
+  );
+
+  if (needsCorrectAnswer && attempt.examId) {
+    const examId = attempt.examId._id ?? attempt.examId;
+    const cache = await ExamQuestionCache.findOne({ userId, examId }).lean();
+    if (cache?.questions && Array.isArray(cache.questions)) {
+      const correctMap = new Map();
+      cache.questions.forEach((q, index) => {
+        const key = extractQuestionId(q, index);
+        correctMap.set(key, extractCorrectOptions(q));
+      });
+
+      review.answers = review.answers.map((a) => ({
+        ...a,
+        correctAnswer:
+          a.correctAnswer === null || a.correctAnswer === undefined
+            ? correctMap.get(a.questionId) ?? null
+            : a.correctAnswer,
+      }));
+    }
+  }
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Attempt details fetched",
-    data: attempt,
+    data: {
+      attemptId: attempt._id,
+      exam: attempt.examId
+        ? {
+            examId: attempt.examId._id ?? attempt.examId,
+            name: attempt.examId.name ?? null,
+            durationMinutes: attempt.examId.durationMinutes ?? null,
+          }
+        : null,
+      score: attempt.score ?? 0,
+      correctCount: attempt.correctCount ?? 0,
+      wrongCount: attempt.wrongCount ?? 0,
+      unansweredCount: attempt.unansweredCount ?? 0,
+      status: attempt.status,
+      startedAt: attempt.startedAt,
+      endedAt: attempt.endedAt,
+      flaggedQuestionIds: attempt.flaggedQuestionIds || [],
+      review,
+      createdAt: attempt.createdAt,
+      updatedAt: attempt.updatedAt,
+    },
   });
 });

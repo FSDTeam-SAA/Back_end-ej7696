@@ -20,6 +20,7 @@ const examAttemptSchema = new Schema(
       {
         questionId: { type: String, default: "" },
         selectedKey: { type: Schema.Types.Mixed, default: null },
+        correctAnswer: { type: Schema.Types.Mixed, default: null },
         isCorrect: { type: Boolean, default: false },
         timeSpentSec: { type: Number, default: 0 },
       },

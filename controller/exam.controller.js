@@ -752,6 +752,7 @@ export const submitExamAnswers = catchAsync(async (req, res) => {
       answers: details.map((d) => ({
         questionId: d.questionId,
         selectedKey: d.submitted,
+        correctAnswer: d.correctOptions,
         isCorrect: d.isCorrect,
         timeSpentSec: d.timeSpentSec,
       })),
