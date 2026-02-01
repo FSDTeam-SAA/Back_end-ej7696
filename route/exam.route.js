@@ -4,7 +4,9 @@ import {
   deleteExam,
   getActiveExams,
   getAllExamsAdmin,
+  saveExamProgress,
   submitExamAnswers,
+  submitExamReview,
   startExam,
   updateExam,
   updateExamStatus,
@@ -18,7 +20,9 @@ router.get("/", optionalProtect, getActiveExams);
 router.get("/all", protect, requirePermission("manage_exams_questions"), getAllExamsAdmin);
 router.post("/:id/start", protect, startExam);
 router.get("/:id/start", protect, startExam);
+router.post("/:id/progress", protect, saveExamProgress);
 router.post("/:id/submit", protect, submitExamAnswers); 
+router.post("/:id/review", protect, submitExamReview);
 router.post("/", protect, requirePermission("manage_exams_questions"), upload.single("image"), createExam);
 router.put("/:id", protect, requirePermission("manage_exams_questions"), upload.single("image"), updateExam);
 router.patch("/:id/status", protect, requirePermission("manage_exams_questions"), updateExamStatus);

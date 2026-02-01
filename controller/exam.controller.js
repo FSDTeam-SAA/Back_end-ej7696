@@ -10,6 +10,7 @@ import { ExamAttempt } from "../model/examAttempt.model.js";
 import { QuestionUsage } from "../model/questionUsage.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { AppSetting } from "../model/appSetting.model.js";
+import { ExamRating } from "../model/examRating.model.js";
 
 const QUESTION_SERVICE_URL =
   process.env.QUESTION_SERVICE_URL ||
@@ -76,6 +77,22 @@ const normalizeAnswerValue = (value) => {
   return [value.toString().trim().toLowerCase()].filter(Boolean);
 };
 
+const mergeIndexedArray = (existing, updates) => {
+  const base = Array.isArray(existing) ? [...existing] : [];
+  if (!Array.isArray(updates)) return base;
+  updates.forEach((value, index) => {
+    if (value !== undefined) {
+      base[index] = value;
+    }
+  });
+  return base;
+};
+
+const toNumberOrZero = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+};
+
 const extractQuestionId = (q, index) =>
   q?._id?.toString() ||
   q?.id?.toString() ||
@@ -86,6 +103,16 @@ const getMonthKey = (date = new Date()) => {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   return `${year}-${month}`;
+};
+
+const applyQuestionIndex = (questions) => {
+  if (!Array.isArray(questions)) return questions;
+  return questions.map((q, index) => {
+    if (q && typeof q === "object" && !Array.isArray(q)) {
+      return { ...q, index };
+    }
+    return q;
+  });
 };
 
 const listExams = async (filter = {}, pageQuery, limitQuery) => {
@@ -290,11 +317,18 @@ export const startExam = catchAsync(async (req, res) => {
         fromCache: true,
         status: existingCache.status,
         statusCode: existingCache.statusCode,
-        questions: existingCache.questions,
+        questions: applyQuestionIndex(existingCache.questions),
         startTime: existingCache.startTime,
         endTime: existingCache.endTime,
         durationMinutes: existingCache.durationMinutes,
         cachedAt: existingCache.updatedAt,
+        progress: existingCache.progress || {
+          answers: [],
+          timeSpentSec: [],
+          currentIndex: 0,
+          flaggedQuestionIds: [],
+          lastSavedAt: null,
+        },
       },
     });
   }
@@ -543,6 +577,13 @@ export const startExam = catchAsync(async (req, res) => {
       statusCode: result?.status_code ?? externalRes.status,
       questions: parsedQuestions,
       rawResponse: result,
+      progress: {
+        answers: [],
+        timeSpentSec: [],
+        currentIndex: 0,
+        flaggedQuestionIds: [],
+        lastSavedAt: null,
+      },
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
@@ -575,11 +616,18 @@ export const startExam = catchAsync(async (req, res) => {
     data: {
       status: result?.status ?? "success",
       statusCode: result?.status_code ?? externalRes.status,
-      questions: cacheDoc.questions,
+      questions: applyQuestionIndex(cacheDoc.questions),
       startTime: cacheDoc.startTime,
       endTime: cacheDoc.endTime,
       durationMinutes: cacheDoc.durationMinutes,
       fromCache: false,
+      progress: cacheDoc.progress || {
+        answers: [],
+        timeSpentSec: [],
+        currentIndex: 0,
+        flaggedQuestionIds: [],
+        lastSavedAt: null,
+      },
     },
   });
 });
@@ -715,7 +763,9 @@ export const submitExamAnswers = catchAsync(async (req, res) => {
       submitted,
       correctOptions,
       isCorrect,
-      timeSpentSec: Number(req.body?.timeSpent?.[index]) || 0,
+      timeSpentSec: toNumberOrZero(
+        req.body?.timeSpent?.[index] ?? cache.progress?.timeSpentSec?.[index]
+      ),
     });
   });
 
@@ -733,6 +783,13 @@ export const submitExamAnswers = catchAsync(async (req, res) => {
     answers,
     score,
     submittedAt: new Date(),
+  };
+  cache.progress = {
+    answers: [],
+    timeSpentSec: [],
+    currentIndex: 0,
+    flaggedQuestionIds: [],
+    lastSavedAt: null,
   };
   await cache.save();
 
@@ -769,6 +826,172 @@ export const submitExamAnswers = catchAsync(async (req, res) => {
       score,
       details,
       cachedQuestionsVersion: cache.updatedAt,
+    },
+  });
+});
+
+export const saveExamProgress = catchAsync(async (req, res) => {
+  const userId = req.user?._id?.toString();
+  const examId = req.params.id || req.body.examId;
+
+  if (!userId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  }
+  if (!examId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Exam ID is required");
+  }
+
+  const cache = await ExamQuestionCache.findOne({ userId, examId });
+  if (!cache || !Array.isArray(cache.questions) || cache.questions.length === 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "No cached questions found. Start the exam first."
+    );
+  }
+
+  const questionCount = Array.isArray(cache.questions)
+    ? cache.questions.length
+    : 0;
+
+  const progress = cache.progress || {
+    answers: [],
+    timeSpentSec: [],
+    currentIndex: 0,
+    flaggedQuestionIds: [],
+    lastSavedAt: null,
+  };
+
+  const incomingAnswers = Array.isArray(req.body?.answers)
+    ? req.body.answers
+    : null;
+  const incomingTimeSpent = Array.isArray(req.body?.timeSpent)
+    ? req.body.timeSpent.map(toNumberOrZero)
+    : null;
+
+  if (incomingAnswers) {
+    progress.answers = mergeIndexedArray(progress.answers, incomingAnswers);
+  }
+  if (incomingTimeSpent) {
+    progress.timeSpentSec = mergeIndexedArray(
+      progress.timeSpentSec,
+      incomingTimeSpent
+    );
+  }
+
+  const indexValue = req.body?.questionIndex ?? req.body?.index;
+  const numericIndex = Number.isFinite(Number(indexValue))
+    ? Number(indexValue)
+    : null;
+
+  if (
+    numericIndex !== null &&
+    numericIndex >= 0 &&
+    (questionCount === 0 || numericIndex < questionCount)
+  ) {
+    if (req.body?.answer !== undefined) {
+      progress.answers = mergeIndexedArray(progress.answers, []);
+      progress.answers[numericIndex] = req.body.answer;
+    }
+    if (req.body?.timeSpentSec !== undefined || req.body?.timeSpent !== undefined) {
+      const timeValue =
+        req.body?.timeSpentSec !== undefined
+          ? req.body.timeSpentSec
+          : req.body?.timeSpent;
+      progress.timeSpentSec = mergeIndexedArray(progress.timeSpentSec, []);
+      progress.timeSpentSec[numericIndex] = toNumberOrZero(timeValue);
+    }
+  }
+
+  if (req.body?.currentIndex !== undefined) {
+    const currentIndex = Number(req.body.currentIndex);
+    if (!Number.isNaN(currentIndex) && currentIndex >= 0) {
+      progress.currentIndex =
+        questionCount > 0 ? Math.min(currentIndex, questionCount - 1) : currentIndex;
+    }
+  }
+
+  if (Array.isArray(req.body?.flaggedQuestionIds)) {
+    progress.flaggedQuestionIds = req.body.flaggedQuestionIds
+      .map((f) => f?.toString())
+      .filter(Boolean);
+  }
+
+  if (questionCount > 0) {
+    progress.answers = Array.isArray(progress.answers)
+      ? progress.answers.slice(0, questionCount)
+      : [];
+    progress.timeSpentSec = Array.isArray(progress.timeSpentSec)
+      ? progress.timeSpentSec.slice(0, questionCount)
+      : [];
+  }
+
+  progress.lastSavedAt = new Date();
+  cache.progress = progress;
+  await cache.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam progress saved",
+    data: {
+      progress,
+      questionCount,
+      cachedAt: cache.updatedAt,
+    },
+  });
+});
+
+export const submitExamReview = catchAsync(async (req, res) => {
+  const userId = req.user?._id?.toString();
+  const examId = req.params.id || req.body.examId;
+
+  if (!userId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  }
+  if (!examId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Exam ID is required");
+  }
+
+  const stars = Number(req.body?.stars ?? req.body?.rating);
+  if (Number.isNaN(stars)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Rating must be a number");
+  }
+  if (stars < 1 || stars > 5) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Rating must be between 1 and 5");
+  }
+
+  const feedbackText =
+    req.body?.feedbackText ?? req.body?.testimonial ?? req.body?.review ?? "";
+  const displayName =
+    req.body?.name ??
+    req.body?.displayName ??
+    req.user?.name ??
+    [req.user?.firstName, req.user?.lastName].filter(Boolean).join(" ") ??
+    "";
+
+  const review = await ExamRating.findOneAndUpdate(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      stars,
+      feedbackText,
+      displayName,
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam review saved",
+    data: {
+      reviewId: review._id,
+      examId: review.examId,
+      stars: review.stars,
+      feedbackText: review.feedbackText,
+      displayName: review.displayName,
+      updatedAt: review.updatedAt,
     },
   });
 });

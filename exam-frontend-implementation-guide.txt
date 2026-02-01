@@ -1,0 +1,94 @@
+Exam Flow Implementation Guide (Frontend)
+
+Overview
+- Base URL: {{base_url}}/api/v1
+- Auth: All exam actions require Authorization: Bearer <token>
+- Exam endpoints used:
+  - POST /exam/:examId/start
+  - GET  /exam/:examId/start
+  - POST /exam/:examId/progress
+  - POST /exam/:examId/submit
+  - POST /exam/:examId/review
+
+1) Start / Resume Exam
+- Call POST /exam/:examId/start (or GET) with token.
+- Response now includes:
+  - questions: array (each object gets an index field)
+  - startTime, endTime, durationMinutes
+  - progress: { answers, timeSpentSec, currentIndex, flaggedQuestionIds, lastSavedAt }
+
+Suggested client state
+- questions: array
+- answers: array (index aligned with questions)
+- timeSpentSec: array (index aligned with questions)
+- currentIndex: number
+- flaggedQuestionIds: string[]
+
+On start response:
+- If progress exists, hydrate local state from progress (answers, timeSpentSec, currentIndex, flaggedQuestionIds).
+- If progress is empty, initialize answers/timeSpentSec to empty arrays and currentIndex = 0.
+
+2) Tracking time per question
+- Start a timer when the question becomes active.
+- On navigation away or periodic autosave, add elapsed seconds to timeSpentSec[index].
+- Send time in seconds (integer or float). Backend will coerce to non-negative number.
+
+3) Save progress (per-question step)
+Endpoint: POST /exam/:examId/progress
+Payload (single index update example):
+{
+  "questionIndex": 2,
+  "answer": "Option B",
+  "timeSpentSec": 14
+}
+
+Notes
+- You can send only the parts that changed; server merges arrays by index.
+- progress is stored per user + exam, so users can resume later.
+
+Optional batch update (autosave full state):
+{
+  "answers": ["Option A", ["Option C"], null],
+  "timeSpent": [12, 25, 0],
+  "currentIndex": 1,
+  "flaggedQuestionIds": ["q_1"]
+}
+
+4) Submit final answers
+Endpoint: POST /exam/:examId/submit
+Payload:
+{
+  "answers": ["Option A", ["Option C"], "True"],
+  "flaggedQuestionIds": ["q_1"],
+  "timeSpent": [12, 25, 9]
+}
+
+Important
+- If timeSpent is not sent, backend falls back to cached progress timeSpentSec.
+- Backend normalizes answers by index; ensure answers array length matches questions length.
+
+5) Submit exam review
+Endpoint: POST /exam/:examId/review
+Payload:
+{
+  "stars": 5,
+  "feedbackText": "Great exam, very close to the real thing.",
+  "name": "Buttar Name"
+}
+
+Notes
+- stars must be 1-5.
+- name is optional; if not provided, backend uses the user profile name when available.
+- feedbackText can be empty if you only want to send a rating.
+
+6) Recommended frontend flow (summary)
+- Start exam -> get questions + progress -> hydrate UI
+- Track answer changes + time per question
+- Autosave via /progress on interval (e.g., every 15-30 seconds) and on question change
+- On submit, send answers + flagged + timeSpent (optional if already saved)
+- Show review modal after submit; send /review
+
+7) Error handling
+- 401/403: user not authenticated or inactive
+- 400: missing examId or no cached questions (user must start exam first)
+- 4xx/5xx: show error toast and keep local state (do not wipe)

@@ -342,6 +342,19 @@
           }
         },
         {
+          "name": "Save Exam Progress",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/exam/{{examId}}/progress",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"questionIndex\": 1,\n  \"answer\": \"Option A\",\n  \"timeSpentSec\": 12\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
           "name": "Submit Exam Answers",
           "request": {
             "method": "POST",
@@ -350,6 +363,19 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"answers\": [\"Option A\", [\"Option A\", \"Option C\"], \"True\"],\n  \"flaggedQuestionIds\": [\"q_1\"],\n  \"timeSpent\": [12, 25, 9]\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Submit Exam Review",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/exam/{{examId}}/review",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stars\": 5,\n  \"feedbackText\": \"Great exam, very close to the real thing.\",\n  \"name\": \"Buttar Name\"\n}",
               "options": { "raw": { "language": "json" } }
             }
           }
