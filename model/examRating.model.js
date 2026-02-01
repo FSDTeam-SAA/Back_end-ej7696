@@ -6,6 +6,7 @@ const examRatingSchema = new Schema(
     examId: { type: mongoose.Schema.Types.ObjectId, ref: "Exam", required: true },
     stars: { type: Number, min: 1, max: 5, required: true },
     feedbackText: { type: String, default: "" },
+    displayName: { type: String, default: "" },
   },
   { timestamps: true }
 );

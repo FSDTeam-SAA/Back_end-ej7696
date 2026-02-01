@@ -23,6 +23,13 @@ const examQuestionCacheSchema = new Schema(
     statusCode: { type: Schema.Types.Mixed, default: null },
     questions: { type: Schema.Types.Mixed, default: [] },
     rawResponse: { type: Schema.Types.Mixed, default: {} },
+    progress: {
+      answers: { type: Schema.Types.Mixed, default: [] },
+      timeSpentSec: { type: [Number], default: [] },
+      currentIndex: { type: Number, default: 0 },
+      flaggedQuestionIds: { type: [String], default: [] },
+      lastSavedAt: { type: Date, default: null },
+    },
     lastSubmission: {
       answers: { type: Schema.Types.Mixed, default: [] },
       score: { type: Schema.Types.Mixed, default: null },
