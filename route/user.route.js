@@ -10,6 +10,7 @@ import {
   updateUserSubscription,
   adminSendPasswordResetEmail,
   adminSetTemporaryPassword,
+  getUserExamReviews,
   updateProfile,
 } from "../controller/user.controller.js";
 
@@ -27,6 +28,7 @@ router.patch("/:id/subscription", protect, requirePermission("manage_subscriptio
 router.patch("/:id/permissions", protect, isAdmin, updateSubAdminPermissions);
 router.post("/:id/password-reset-email", protect, requirePermission("send_password_reset_email"), adminSendPasswordResetEmail);
 router.patch("/:id/password", protect, requirePermission("credential_management"), adminSetTemporaryPassword);
+router.get("/:id/exam-reviews", protect, requirePermission("view_user_list"), getUserExamReviews);
 router.delete("/:id", protect, isAdmin, deleteUser);
 
 export default router;

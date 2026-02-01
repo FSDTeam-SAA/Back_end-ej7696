@@ -43,22 +43,25 @@ export const optionalProtect = async (req, res, next) => {
 };
 
 export const isAdmin = (req, res, next) => {
-  if (req.user?.role !== "admin") {
+  const role = req.user?.role?.toString().toLowerCase();
+  if (role !== "admin") {
     throw new AppError(403, "Access denied. You are not an admin.");
   }
   next();
 };
 
 export const isUser = (req, res, next) => {
-  if (req.user?.role !== "user") {
+  const role = req.user?.role?.toString().toLowerCase();
+  if (role !== "user") {
     throw new AppError(403, "Access denied. You are not an user.");
   }
   next();
 };
 
 export const requirePermission = (permission) => (req, res, next) => {
-  if (req.user?.role === "admin") return next();
-  if (req.user?.role !== "sub-admin") {
+  const role = req.user?.role?.toString().toLowerCase();
+  if (role === "admin") return next();
+  if (role !== "sub-admin") {
     throw new AppError(403, "Access denied. Permission required.");
   }
   const permissions = Array.isArray(req.user?.subAdminPermissions)
@@ -71,8 +74,9 @@ export const requirePermission = (permission) => (req, res, next) => {
 };
 
 export const requireAnyPermission = (permissions = []) => (req, res, next) => {
-  if (req.user?.role === "admin") return next();
-  if (req.user?.role !== "sub-admin") {
+  const role = req.user?.role?.toString().toLowerCase();
+  if (role === "admin") return next();
+  if (role !== "sub-admin") {
     throw new AppError(403, "Access denied. Permission required.");
   }
   const current = Array.isArray(req.user?.subAdminPermissions)

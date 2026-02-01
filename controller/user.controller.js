@@ -2,6 +2,8 @@ import httpStatus from "http-status";
 import { User } from "../model/user.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { Exam } from "../model/exam.model.js";
+import { ExamAttempt } from "../model/examAttempt.model.js";
+import { ExamRating } from "../model/examRating.model.js";
 import { generateOTP, uploadOnCloudinary } from "../utils/commonMethod.js";
 import AppError from "../errors/AppError.js";
 import sendResponse from "../utils/sendResponse.js";
@@ -158,12 +160,82 @@ export const getUsers = catchAsync(async (req, res) => {
     return acc;
   }, {});
 
+  const scoreMatch = userIds.length
+    ? { userId: { $in: userIds }, score: { $ne: null } }
+    : null;
+
+  const [overallAgg, perExamAgg] = scoreMatch
+    ? await Promise.all([
+        ExamAttempt.aggregate([
+          { $match: scoreMatch },
+          {
+            $group: {
+              _id: "$userId",
+              avgScore: { $avg: "$score" },
+              attempts: { $sum: 1 },
+            },
+          },
+        ]),
+        ExamAttempt.aggregate([
+          { $match: scoreMatch },
+          {
+            $group: {
+              _id: { userId: "$userId", examId: "$examId" },
+              avgScore: { $avg: "$score" },
+              attempts: { $sum: 1 },
+            },
+          },
+        ]),
+      ])
+    : [[], []];
+
+  const overallMap = overallAgg.reduce((acc, item) => {
+    acc[item._id.toString()] = {
+      avgScore: Number((item.avgScore ?? 0).toFixed(2)),
+      attempts: item.attempts || 0,
+    };
+    return acc;
+  }, {});
+
+  const perExamIds = [
+    ...new Set(
+      perExamAgg
+        .map((item) => item?._id?.examId?.toString())
+        .filter(Boolean)
+    ),
+  ];
+  const perExamDocs = perExamIds.length
+    ? await Exam.find({ _id: { $in: perExamIds } }).select("name").lean()
+    : [];
+  const perExamNameMap = perExamDocs.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const perExamMap = perExamAgg.reduce((acc, item) => {
+    const userKey = item?._id?.userId?.toString();
+    const examKey = item?._id?.examId?.toString();
+    if (!userKey || !examKey) return acc;
+    if (!acc[userKey]) acc[userKey] = [];
+    acc[userKey].push({
+      examId: item._id.examId,
+      examName: perExamNameMap[examKey] || null,
+      avgScore: Number((item.avgScore ?? 0).toFixed(2)),
+      attempts: item.attempts || 0,
+    });
+    return acc;
+  }, {});
+
   const enrichedUsers = users.map((user) => {
     const unlockedExams = unlockedMap[user._id.toString()] || [];
+    const scoreInfo = overallMap[user._id.toString()];
+    const avgScoreByExam = perExamMap[user._id.toString()] || [];
     return {
       ...user,
       unlockedExams,
       unlockedExamCount: unlockedExams.length,
+      avgScore: scoreInfo?.avgScore ?? 0,
+      avgScoreByExam,
     };
   });
 
@@ -212,6 +284,58 @@ export const getUserDetails = catchAsync(async (req, res) => {
     purchasedAt: access.purchasedAt || null,
   }));
 
+  const [overallAgg, perExamAgg] = await Promise.all([
+    ExamAttempt.aggregate([
+      { $match: { userId: user._id, score: { $ne: null } } },
+      {
+        $group: {
+          _id: "$userId",
+          avgScore: { $avg: "$score" },
+          attempts: { $sum: 1 },
+        },
+      },
+    ]),
+    ExamAttempt.aggregate([
+      { $match: { userId: user._id, score: { $ne: null } } },
+      {
+        $group: {
+          _id: { userId: "$userId", examId: "$examId" },
+          avgScore: { $avg: "$score" },
+          attempts: { $sum: 1 },
+        },
+      },
+    ]),
+  ]);
+
+  const avgScore = overallAgg.length
+    ? Number((overallAgg[0].avgScore ?? 0).toFixed(2))
+    : 0;
+
+  const perExamIds = [
+    ...new Set(
+      perExamAgg
+        .map((item) => item?._id?.examId?.toString())
+        .filter(Boolean)
+    ),
+  ];
+  const perExamDocs = perExamIds.length
+    ? await Exam.find({ _id: { $in: perExamIds } }).select("name").lean()
+    : [];
+  const perExamNameMap = perExamDocs.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const avgScoreByExam = perExamAgg.map((item) => {
+    const examKey = item?._id?.examId?.toString();
+    return {
+      examId: item._id.examId,
+      examName: examKey ? perExamNameMap[examKey] || null : null,
+      avgScore: Number((item.avgScore ?? 0).toFixed(2)),
+      attempts: item.attempts || 0,
+    };
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
@@ -220,7 +344,49 @@ export const getUserDetails = catchAsync(async (req, res) => {
       ...user,
       unlockedExams,
       unlockedExamCount: unlockedExams.length,
+      avgScore,
+      avgScoreByExam,
     },
+  });
+});
+
+export const getUserExamReviews = catchAsync(async (req, res) => {
+  const userId = req.params.id;
+  if (!userId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "User ID is required");
+  }
+
+  const reviews = await ExamRating.find({ userId })
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const examIds = [
+    ...new Set(reviews.map((r) => r.examId?.toString()).filter(Boolean)),
+  ];
+  const exams = examIds.length
+    ? await Exam.find({ _id: { $in: examIds } }).select("name").lean()
+    : [];
+  const examMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const data = reviews.map((review) => ({
+    reviewId: review._id,
+    examId: review.examId,
+    examName: examMap[review.examId?.toString()] || null,
+    stars: review.stars,
+    feedbackText: review.feedbackText,
+    displayName: review.displayName,
+    createdAt: review.createdAt,
+    updatedAt: review.updatedAt,
+  }));
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "User exam reviews fetched",
+    data,
   });
 });
 
