@@ -28,6 +28,12 @@ On start response:
 - If progress exists, hydrate local state from progress (answers, timeSpentSec, currentIndex, flaggedQuestionIds).
 - If progress is empty, initialize answers/timeSpentSec to empty arrays and currentIndex = 0.
 
+1.1) Regenerate (new question set)
+- To force a new set of questions, call /exam/:examId/start with:
+  - recreate=true (or regenerate=true)
+  - Optional: n_question to request a specific count
+- This bypasses the cached questions for the user/exam.
+
 2) Tracking time per question
 - Start a timer when the question becomes active.
 - On navigation away or periodic autosave, add elapsed seconds to timeSpentSec[index].
