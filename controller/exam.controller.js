@@ -23,6 +23,8 @@ const QUESTION_SERVICE_RETRY_COUNT =
   Number(process.env.QUESTION_SERVICE_RETRY_COUNT) || 1;
 const QUESTION_SERVICE_RETRY_DELAY_MS =
   Number(process.env.QUESTION_SERVICE_RETRY_DELAY_MS) || 800;
+const QUESTION_SERVICE_DEFAULT_EXAM_TYPE =
+  process.env.QUESTION_SERVICE_DEFAULT_EXAM_TYPE?.toString().trim() || "";
 
 const parseStatus = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -253,7 +255,22 @@ export const getAllExamsAdmin = catchAsync(async (req, res) => {
 export const startExam = catchAsync(async (req, res) => {
   const userId = req.user?._id?.toString();
   const examId = req.params.id || req.body.examId;
-  const exam_type = req.body.exam_type || req.query.exam_type || "standard";
+  const rawExamType =
+    req.body?.exam_type ?? req.query?.exam_type ?? req.body?.examType ?? null;
+  const normalizedExamType =
+    rawExamType !== undefined && rawExamType !== null
+      ? rawExamType.toString().trim()
+      : "";
+  const exam_type =
+    normalizedExamType && normalizedExamType.toLowerCase() !== "standard"
+      ? normalizedExamType
+      : QUESTION_SERVICE_DEFAULT_EXAM_TYPE;
+  if (!exam_type) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "exam_type is required. Provide exam_type or set QUESTION_SERVICE_DEFAULT_EXAM_TYPE."
+    );
+  }
 
   if (!userId) {
     throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
@@ -296,7 +313,11 @@ export const startExam = catchAsync(async (req, res) => {
     ) ?? exam.durationMinutes ?? null;
 
   const recreate = parseBoolean(
-    req.body?.recreate ?? req.query?.recreate ?? false
+    req.body?.recreate ??
+      req.query?.recreate ??
+      req.body?.regenerate ??
+      req.query?.regenerate ??
+      false
   );
 
   const existingCache = await ExamQuestionCache.findOne({
@@ -355,10 +376,10 @@ export const startExam = catchAsync(async (req, res) => {
 
   const questionPayload = {
     ex_name: exam.name,
-    exam_type,
     sheet_content: exam.effectivitySheetContent || "",
     knowledge_content: exam.bodyOfKnowledgeContent || "",
     n_question: effectiveQuestionCount,
+    exam_type,
   };
 
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -371,7 +392,7 @@ export const startExam = catchAsync(async (req, res) => {
     if (useForm) {
       const params = new URLSearchParams();
       params.append("ex_name", questionPayload.ex_name || "");
-      params.append("exam_type", questionPayload.exam_type || "");
+      params.append("exam_type", questionPayload.exam_type);
       params.append("sheet_content", questionPayload.sheet_content || "");
       params.append("knowledge_content", questionPayload.knowledge_content || "");
       params.append("n_question", questionPayload.n_question.toString());
