@@ -11,6 +11,7 @@ import { QuestionUsage } from "../model/questionUsage.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { AppSetting } from "../model/appSetting.model.js";
 import { ExamRating } from "../model/examRating.model.js";
+import { User } from "../model/user.model.js";
 
 const QUESTION_SERVICE_URL =
   process.env.QUESTION_SERVICE_URL ||
@@ -31,6 +32,19 @@ const parseStatus = (value) => {
   const normalized = value.toString().toLowerCase();
   if (!["active", "inactive"].includes(normalized)) {
     throw new AppError(httpStatus.BAD_REQUEST, "Status must be active or inactive");
+  }
+  return normalized;
+};
+
+const parseReviewStatus = (value) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  let normalized = value.toString().toLowerCase();
+  if (normalized === "publish") normalized = "published";
+  if (!["pending", "published"].includes(normalized)) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Review status must be pending or published"
+    );
   }
   return normalized;
 };
@@ -134,6 +148,28 @@ const listExams = async (filter = {}, pageQuery, limitQuery) => {
 
   return {
     exams: exams.map(sanitizeExam),
+    meta: { page, limit, total, totalPages },
+  };
+};
+
+const listExamReviews = async (filter = {}, pageQuery, limitQuery) => {
+  const page = Math.max(parseInt(pageQuery, 10) || 1, 1);
+  const limit = Math.max(parseInt(limitQuery, 10) || 10, 1);
+  const skip = (page - 1) * limit;
+
+  const [reviews, total] = await Promise.all([
+    ExamRating.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    ExamRating.countDocuments(filter),
+  ]);
+
+  const totalPages = Math.ceil(total / limit) || 1;
+
+  return {
+    reviews,
     meta: { page, limit, total, totalPages },
   };
 };
@@ -255,8 +291,8 @@ export const getAllExamsAdmin = catchAsync(async (req, res) => {
 export const startExam = catchAsync(async (req, res) => {
   const userId = req.user?._id?.toString();
   const examId = req.params.id || req.body.examId;
-  const rawExamType =
-    req.body?.exam_type ?? req.query?.exam_type ?? req.body?.examType ?? null;
+  const rawExamType = "closed_book"
+  //   req.body?.exam_type ?? req.query?.exam_type ?? req.body?.examType ?? null;
   const normalizedExamType =
     rawExamType !== undefined && rawExamType !== null
       ? rawExamType.toString().trim()
@@ -265,12 +301,12 @@ export const startExam = catchAsync(async (req, res) => {
     normalizedExamType && normalizedExamType.toLowerCase() !== "standard"
       ? normalizedExamType
       : QUESTION_SERVICE_DEFAULT_EXAM_TYPE;
-  if (!exam_type) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "exam_type is required. Provide exam_type or set QUESTION_SERVICE_DEFAULT_EXAM_TYPE."
-    );
-  }
+  // if (!exam_type) {
+  //   throw new AppError(
+  //     httpStatus.BAD_REQUEST,
+  //     "exam_type is required. Provide exam_type or set QUESTION_SERVICE_DEFAULT_EXAM_TYPE."
+  //   );
+  // }
 
   if (!userId) {
     throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
@@ -998,6 +1034,7 @@ export const submitExamReview = catchAsync(async (req, res) => {
       stars,
       feedbackText,
       displayName,
+      status: "pending",
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
@@ -1012,7 +1049,205 @@ export const submitExamReview = catchAsync(async (req, res) => {
       stars: review.stars,
       feedbackText: review.feedbackText,
       displayName: review.displayName,
+      status: review.status,
       updatedAt: review.updatedAt,
     },
+  });
+});
+
+export const getPublishedExamReviews = catchAsync(async (req, res) => {
+  const filter = { status: "published" };
+  if (req.query.examId) filter.examId = req.query.examId;
+
+  const data = await listExamReviews(filter, req.query.page, req.query.limit);
+
+  const examIds = [
+    ...new Set(data.reviews.map((r) => r.examId?.toString()).filter(Boolean)),
+  ];
+  const exams = examIds.length
+    ? await Exam.find({ _id: { $in: examIds } }).select("name").lean()
+    : [];
+  const examMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const reviews = data.reviews.map((review) => ({
+    reviewId: review._id,
+    examId: review.examId,
+    examName: examMap[review.examId?.toString()] || null,
+    stars: review.stars,
+    feedbackText: review.feedbackText,
+    displayName: review.displayName,
+    createdAt: review.createdAt,
+    updatedAt: review.updatedAt,
+  }));
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Published exam reviews fetched",
+    data: {
+      reviews,
+      meta: data.meta,
+    },
+  });
+});
+
+export const getAllExamReviewsAdmin = catchAsync(async (req, res) => {
+  const filter = {};
+  const statusFilter = parseReviewStatus(req.query.status);
+  if (statusFilter) filter.status = statusFilter;
+  if (req.query.examId) filter.examId = req.query.examId;
+  if (req.query.userId) filter.userId = req.query.userId;
+
+  const data = await listExamReviews(filter, req.query.page, req.query.limit);
+
+  const examIds = [
+    ...new Set(data.reviews.map((r) => r.examId?.toString()).filter(Boolean)),
+  ];
+  const userIds = [
+    ...new Set(data.reviews.map((r) => r.userId?.toString()).filter(Boolean)),
+  ];
+
+  const [exams, users] = await Promise.all([
+    examIds.length
+      ? Exam.find({ _id: { $in: examIds } }).select("name").lean()
+      : [],
+    userIds.length
+      ? User.find({ _id: { $in: userIds } })
+          .select("name firstName lastName email")
+          .lean()
+      : [],
+  ]);
+
+  const examMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const userMap = users.reduce((acc, user) => {
+    const name =
+      user.name ||
+      [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+      user.email ||
+      "";
+    acc[user._id.toString()] = { name, email: user.email || "" };
+    return acc;
+  }, {});
+
+  const reviews = data.reviews.map((review) => {
+    const userInfo = userMap[review.userId?.toString()] || {
+      name: "",
+      email: "",
+    };
+    return {
+      reviewId: review._id,
+      examId: review.examId,
+      examName: examMap[review.examId?.toString()] || null,
+      userId: review.userId,
+      userName: userInfo.name,
+      userEmail: userInfo.email,
+      stars: review.stars,
+      feedbackText: review.feedbackText,
+      displayName: review.displayName,
+      status: review.status,
+      createdAt: review.createdAt,
+      updatedAt: review.updatedAt,
+    };
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam reviews fetched",
+    data: {
+      reviews,
+      meta: data.meta,
+    },
+  });
+});
+
+export const updateExamReview = catchAsync(async (req, res) => {
+  const reviewId = req.params.reviewId;
+  if (!reviewId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Review ID is required");
+  }
+
+  const updates = {};
+
+  if (req.body?.status !== undefined) {
+    updates.status = parseReviewStatus(req.body.status);
+  }
+
+  if (req.body?.stars !== undefined) {
+    const stars = Number(req.body.stars);
+    if (Number.isNaN(stars)) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Rating must be a number");
+    }
+    if (stars < 1 || stars > 5) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "Rating must be between 1 and 5"
+      );
+    }
+    updates.stars = stars;
+  }
+
+  if (req.body?.feedbackText !== undefined) {
+    updates.feedbackText = req.body.feedbackText ?? "";
+  }
+
+  if (req.body?.displayName !== undefined) {
+    updates.displayName = req.body.displayName ?? "";
+  }
+
+  if (!Object.keys(updates).length) {
+    throw new AppError(httpStatus.BAD_REQUEST, "No valid updates provided");
+  }
+
+  const review = await ExamRating.findByIdAndUpdate(
+    reviewId,
+    { $set: updates },
+    { new: true }
+  );
+
+  if (!review) {
+    throw new AppError(httpStatus.NOT_FOUND, "Review not found");
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Review updated",
+    data: {
+      reviewId: review._id,
+      examId: review.examId,
+      userId: review.userId,
+      stars: review.stars,
+      feedbackText: review.feedbackText,
+      displayName: review.displayName,
+      status: review.status,
+      updatedAt: review.updatedAt,
+    },
+  });
+});
+
+export const deleteExamReview = catchAsync(async (req, res) => {
+  const reviewId = req.params.reviewId;
+  if (!reviewId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Review ID is required");
+  }
+
+  const review = await ExamRating.findByIdAndDelete(reviewId);
+  if (!review) {
+    throw new AppError(httpStatus.NOT_FOUND, "Review not found");
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Review deleted",
+    data: null,
   });
 });
