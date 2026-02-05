@@ -2,12 +2,16 @@ import express from "express";
 import {
   createExam,
   deleteExam,
+  deleteExamReview,
   getActiveExams,
   getAllExamsAdmin,
+  getAllExamReviewsAdmin,
+  getPublishedExamReviews,
   saveExamProgress,
   submitExamAnswers,
   submitExamReview,
   startExam,
+  updateExamReview,
   updateExam,
   updateExamStatus,
 } from "../controller/exam.controller.js";
@@ -18,6 +22,25 @@ const router = express.Router();
 
 router.get("/", optionalProtect, getActiveExams);
 router.get("/all", protect, requirePermission("manage_exams_questions"), getAllExamsAdmin);
+router.get("/reviews", protect, getPublishedExamReviews);
+router.get(
+  "/reviews/admin",
+  protect,
+  requirePermission("manage_exams_questions"),
+  getAllExamReviewsAdmin
+);
+router.patch(
+  "/reviews/:reviewId",
+  protect,
+  requirePermission("manage_exams_questions"),
+  updateExamReview
+);
+router.delete(
+  "/reviews/:reviewId",
+  protect,
+  requirePermission("manage_exams_questions"),
+  deleteExamReview
+);
 router.post("/:id/start", protect, startExam);
 router.get("/:id/start", protect, startExam);
 router.post("/:id/progress", protect, saveExamProgress);

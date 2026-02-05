@@ -378,6 +378,7 @@ export const getUserExamReviews = catchAsync(async (req, res) => {
     stars: review.stars,
     feedbackText: review.feedbackText,
     displayName: review.displayName,
+    status: review.status,
     createdAt: review.createdAt,
     updatedAt: review.updatedAt,
   }));
