@@ -508,7 +508,7 @@ export const adminSendPasswordResetEmail = catchAsync(async (req, res) => {
 });
 
 export const adminSetTemporaryPassword = catchAsync(async (req, res) => {
-  const { password } = req.body;
+  const password = req.body?.password ?? req.body?.tempPassword;
   if (!password) {
     throw new AppError(httpStatus.BAD_REQUEST, "Password is required");
   }
