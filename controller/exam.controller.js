@@ -335,7 +335,7 @@ export const startExam = catchAsync(async (req, res) => {
   const accessDoc = await ExamAccess.findOne({ userId, examId });
   const isUnlocked = accessDoc?.status === "unlocked";
   const maxQuestionsPerSession = isUnlocked
-    ? 20
+    ? 30
     : accessDoc?.maxQuestionsPerSession || 2;
   const effectiveQuestionCount = Math.min(nQuestion, maxQuestionsPerSession);
 
