@@ -228,7 +228,7 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
       stripePaymentIntentId: paymentIntentId,
       purchaseType: "exam",
       purchasePrice: pricing.examUnlockPrice,
-      maxQuestionsPerSession: 20,
+      maxQuestionsPerSession: 30,
       purchasedAt: new Date(),
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -362,7 +362,7 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
         stripePaymentIntentId: paymentIntentId,
         purchaseType: "plan",
         purchasePrice: pricing.professionalPlanPrice,
-        maxQuestionsPerSession: 20,
+        maxQuestionsPerSession: 30,
         purchasedAt: new Date(),
       },
       { new: true }
@@ -527,7 +527,7 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
       paypalOrderId: orderId,
       purchaseType: "exam",
       purchasePrice: pricing.examUnlockPrice,
-      maxQuestionsPerSession: 20,
+      maxQuestionsPerSession: 30,
       purchasedAt: new Date(),
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -680,7 +680,7 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
       paymentStatus: "completed",
       purchaseType: "plan",
       purchasePrice: pricing.professionalPlanPrice,
-      maxQuestionsPerSession: 20,
+      maxQuestionsPerSession: 30,
       purchasedAt: new Date(),
     },
     { new: true }
@@ -722,7 +722,7 @@ export const manualUnlockExam = catchAsync(async (req, res) => {
       paymentStatus: "manual",
       purchaseType: "manual",
       purchasePrice: 0,
-      maxQuestionsPerSession: 20,
+      maxQuestionsPerSession: 30,
       purchasedAt: new Date(),
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }

@@ -489,7 +489,7 @@
           "name": "Admin - Purchases List",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/payments/admin/purchases?page=1&limit=20",
+            "url": "{{base_url}}/api/v1/payments/admin/purchases?page=1&limit=30",
             "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
           }
         }
