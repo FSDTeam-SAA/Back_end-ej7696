@@ -459,7 +459,7 @@ export const startExam = catchAsync(async (req, res) => {
   let externalRes;
   let usedForm = QUESTION_SERVICE_MODE === "form";
 
-  try {
+ try {
   let attempt = 0;
 
   while (attempt <= QUESTION_SERVICE_RETRY_COUNT) {
@@ -467,23 +467,40 @@ export const startExam = catchAsync(async (req, res) => {
       externalRes = await sendQuestionRequest(usedForm, attempt);
       break;
     } catch (error) {
-      // ✅ Log the actual upstream error details (works for axios + fetch-wrapped errors)
+      const cause = error?.cause; // <-- undici/fetch root cause lives here
+
       console.error("[QuestionService] attempt failed", {
         attempt,
         name: error?.name,
         message: error?.message,
+
+        // fetch/undici details
+        causeName: cause?.name,
+        causeMessage: cause?.message,
+        causeCode: cause?.code,       // ECONNRESET / ETIMEDOUT / ECONNREFUSED, etc.
+        causeErrno: cause?.errno,
+        causeSyscall: cause?.syscall,
+        causeAddress: cause?.address,
+        causePort: cause?.port,
+
+        // generic fields (axios/etc)
         code: error?.code,
         status: error?.status ?? error?.response?.status,
         data: error?.data ?? error?.response?.data,
-        body: error?.body, // if you attached body in fetch wrapper
+        body: error?.body,
+
         stack: error?.stack,
       });
 
-      if (error.name === "AbortError") {
+      // Retry on timeouts + transient network errors (common for gunicorn resets)
+      const transient = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"]);
+      const transientCode = cause?.code || error?.code;
+
+      if (error?.name === "AbortError" || transient.has(transientCode)) {
         if (attempt >= QUESTION_SERVICE_RETRY_COUNT) {
           throw new AppError(
             httpStatus.REQUEST_TIMEOUT,
-            "Question service timed out"
+            `Question service failed (${transientCode || "timeout"})`
           );
         }
         await delay(QUESTION_SERVICE_RETRY_DELAY_MS);
@@ -496,10 +513,20 @@ export const startExam = catchAsync(async (req, res) => {
     }
   }
 } catch (error) {
-  // ✅ Log before wrapping so the original details aren't lost
+  const cause = error?.cause;
+
   console.error("[QuestionService] final failure", {
     name: error?.name,
     message: error?.message,
+
+    causeName: cause?.name,
+    causeMessage: cause?.message,
+    causeCode: cause?.code,
+    causeErrno: cause?.errno,
+    causeSyscall: cause?.syscall,
+    causeAddress: cause?.address,
+    causePort: cause?.port,
+
     code: error?.code,
     status: error?.status ?? error?.response?.status,
     data: error?.data ?? error?.response?.data,
@@ -507,18 +534,19 @@ export const startExam = catchAsync(async (req, res) => {
     stack: error?.stack,
   });
 
-  if (error.name === "AbortError") {
+  const transient = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"]);
+  const transientCode = cause?.code || error?.code;
+
+  if (error?.name === "AbortError" || transient.has(transientCode)) {
     throw new AppError(
       httpStatus.REQUEST_TIMEOUT,
-      "Question service timed out"
+      `Question service failed (${transientCode || "timeout"})`
     );
   }
 
-  throw new AppError(
-    httpStatus.BAD_GATEWAY,
-    "Failed to reach question service"
-  );
+  throw new AppError(httpStatus.BAD_GATEWAY, "Failed to reach question service");
 }
+
 
 
   const contentType = externalRes.headers.get("content-type") || "";
