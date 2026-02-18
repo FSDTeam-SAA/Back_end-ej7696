@@ -14,10 +14,9 @@ import { ExamRating } from "../model/examRating.model.js";
 import { User } from "../model/user.model.js";
 
 const QUESTION_SERVICE_URL =
-  process.env.QUESTION_SERVICE_URL ||
-  "https://ej7696.onrender.com/api/gen-question/";
+  process.env.QUESTION_SERVICE_URL 
 const QUESTION_SERVICE_TIMEOUT_MS =
-  Number(process.env.QUESTION_SERVICE_TIMEOUT_MS) || 30000;
+  Number(process.env.QUESTION_SERVICE_TIMEOUT_MS);
 const QUESTION_SERVICE_MODE =
   process.env.QUESTION_SERVICE_MODE?.toLowerCase() || "form";
 const QUESTION_SERVICE_RETRY_COUNT =
@@ -460,34 +459,95 @@ export const startExam = catchAsync(async (req, res) => {
   let externalRes;
   let usedForm = QUESTION_SERVICE_MODE === "form";
 
-  try {
-    let attempt = 0;
-    while (attempt <= QUESTION_SERVICE_RETRY_COUNT) {
-      try {
-        externalRes = await sendQuestionRequest(usedForm, attempt);
-        break;
-      } catch (error) {
-        if (error.name === "AbortError") {
-          if (attempt >= QUESTION_SERVICE_RETRY_COUNT) {
-            throw new AppError(
-              httpStatus.REQUEST_TIMEOUT,
-              "Question service timed out"
-            );
-          }
-          await delay(QUESTION_SERVICE_RETRY_DELAY_MS);
-          attempt += 1;
-          continue;
-        }
-        throw error;
-      }
-    }
-  } catch (error) {
-    if (error.name === "AbortError") {
-      throw new AppError(httpStatus.REQUEST_TIMEOUT, "Question service timed out");
-    }
+ try {
+  let attempt = 0;
 
-    throw new AppError(httpStatus.BAD_GATEWAY, "Failed to reach question service");
+  while (attempt <= QUESTION_SERVICE_RETRY_COUNT) {
+    try {
+      externalRes = await sendQuestionRequest(usedForm, attempt);
+      break;
+    } catch (error) {
+      const cause = error?.cause; // <-- undici/fetch root cause lives here
+
+      console.error("[QuestionService] attempt failed", {
+        attempt,
+        name: error?.name,
+        message: error?.message,
+
+        // fetch/undici details
+        causeName: cause?.name,
+        causeMessage: cause?.message,
+        causeCode: cause?.code,       // ECONNRESET / ETIMEDOUT / ECONNREFUSED, etc.
+        causeErrno: cause?.errno,
+        causeSyscall: cause?.syscall,
+        causeAddress: cause?.address,
+        causePort: cause?.port,
+
+        // generic fields (axios/etc)
+        code: error?.code,
+        status: error?.status ?? error?.response?.status,
+        data: error?.data ?? error?.response?.data,
+        body: error?.body,
+
+        stack: error?.stack,
+      });
+
+      // Retry on timeouts + transient network errors (common for gunicorn resets)
+      const transient = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"]);
+      const transientCode = cause?.code || error?.code;
+
+      if (error?.name === "AbortError" || transient.has(transientCode)) {
+        if (attempt >= QUESTION_SERVICE_RETRY_COUNT) {
+          throw new AppError(
+            httpStatus.REQUEST_TIMEOUT,
+            `Question service failed (${transientCode || "timeout"})`
+          );
+        }
+        await delay(QUESTION_SERVICE_RETRY_DELAY_MS);
+        attempt += 1;
+        continue;
+      }
+
+      // non-timeout errors: bubble up to outer catch
+      throw error;
+    }
   }
+} catch (error) {
+  const cause = error?.cause;
+
+  console.error("[QuestionService] final failure", {
+    name: error?.name,
+    message: error?.message,
+
+    causeName: cause?.name,
+    causeMessage: cause?.message,
+    causeCode: cause?.code,
+    causeErrno: cause?.errno,
+    causeSyscall: cause?.syscall,
+    causeAddress: cause?.address,
+    causePort: cause?.port,
+
+    code: error?.code,
+    status: error?.status ?? error?.response?.status,
+    data: error?.data ?? error?.response?.data,
+    body: error?.body,
+    stack: error?.stack,
+  });
+
+  const transient = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"]);
+  const transientCode = cause?.code || error?.code;
+
+  if (error?.name === "AbortError" || transient.has(transientCode)) {
+    throw new AppError(
+      httpStatus.REQUEST_TIMEOUT,
+      `Question service failed (${transientCode || "timeout"})`
+    );
+  }
+
+  throw new AppError(httpStatus.BAD_GATEWAY, "Failed to reach question service");
+}
+
+
 
   const contentType = externalRes.headers.get("content-type") || "";
   let result = null;
