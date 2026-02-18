@@ -396,7 +396,7 @@ export const startExam = catchAsync(async (req, res) => {
       { $group: { _id: null, total: { $sum: "$questionsUsed" } } },
     ]);
     const totalUsedThisMonth = usageAgg?.[0]?.total || 0;
-    if (totalUsedThisMonth >= 14) {
+    if (totalUsedThisMonth >= 100) {
       throw new AppError(
         httpStatus.FORBIDDEN,
         "Monthly free question limit reached. Please purchase to unlock more."

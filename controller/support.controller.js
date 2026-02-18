@@ -64,6 +64,17 @@ const findSupportAdmins = async () => {
     .lean();
 };
 
+const buildAdminEmailRecipients = (supportAdmins = []) => {
+  const emails = new Set();
+  supportAdmins.forEach((admin) => {
+    const adminEmail = (admin.email || "").trim();
+    if (adminEmail) emails.add(adminEmail);
+  });
+  const envEmail = (process.env.ADMIN_EMAIL || "").trim();
+  if (envEmail) emails.add(envEmail);
+  return Array.from(emails);
+};
+
 export const createSupportTicket = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
@@ -114,14 +125,13 @@ export const createSupportTicket = catchAsync(async (req, res) => {
     await SupportNotification.insertMany(adminNotifications);
   }
 
-  supportAdmins.forEach((admin) => {
-    if (admin.email) {
-      sendEmail(
-        admin.email,
-        "New Support Ticket",
-        buildAdminEmail(ticket, message)
-      ).catch(() => null);
-    }
+  const adminEmails = buildAdminEmailRecipients(supportAdmins);
+  adminEmails.forEach((adminEmail) => {
+    sendEmail(
+      adminEmail,
+      "New Support Ticket",
+      buildAdminEmail(ticket, message)
+    ).catch(() => null);
   });
 
   notifyAdminsSocket(req, {
@@ -131,11 +141,11 @@ export const createSupportTicket = catchAsync(async (req, res) => {
     userId,
   });
 
-  await sendEmail(
+  sendEmail(
     resolvedEmail,
     "Support request received",
     buildUserConfirmationEmail(ticket)
-  );
+  ).catch(() => null);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -208,6 +218,68 @@ export const replyToSupportTicket = catchAsync(async (req, res) => {
     data: {
       ticketId: ticket._id,
       messageId: reply._id,
+    },
+  });
+});
+
+export const getSupportTickets = catchAsync(async (req, res) => {
+  const { status, search } = req.query;
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+
+  const filter = {};
+  if (status) filter.status = status;
+  if (search) {
+    filter.$or = [
+      { subject: { $regex: search, $options: "i" } },
+      { email: { $regex: search, $options: "i" } },
+      { phone: { $regex: search, $options: "i" } },
+    ];
+  }
+
+  const [tickets, total] = await Promise.all([
+    SupportTicket.find(filter)
+      .sort({ lastMessageAt: -1, createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    SupportTicket.countDocuments(filter),
+  ]);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Support tickets fetched",
+    data: {
+      items: tickets,
+      page,
+      limit,
+      total,
+    },
+  });
+});
+
+export const getSupportTicketDetails = catchAsync(async (req, res) => {
+  const { ticketId } = req.params;
+  if (!ticketId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "ticketId is required");
+  }
+
+  const ticket = await SupportTicket.findById(ticketId).lean();
+  if (!ticket) throw new AppError(httpStatus.NOT_FOUND, "Ticket not found");
+
+  const messages = await SupportMessage.find({ ticketId })
+    .sort({ createdAt: 1 })
+    .populate("senderId", "name email firstName lastName role")
+    .lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Support ticket details fetched",
+    data: {
+      ticket,
+      messages,
     },
   });
 });
