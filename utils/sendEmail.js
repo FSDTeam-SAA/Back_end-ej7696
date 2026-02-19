@@ -12,7 +12,7 @@ export const sendEmail = async (to,subject, html) => {
   await transporter.sendMail({
     from: process.env.APP_USER || 'tahsin.bdcalling@gmail.com', // sender address
     to,
-    subject: subject? subject:  'Password change Link : change it by 10 minutes',
+    subject: subject? subject:  'Password change Link : change it by 10 minutes', 
     html,
   });
 };
