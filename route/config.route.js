@@ -12,24 +12,24 @@ router.post("/config-model", async (req, res) => {
     });
   }
 
+  if (!req.body?.model_name) {
+    return res.status(400).json({
+      success: false,
+      message: "model_name is required",
+    });
+  }
+
   try {
     const upstream = await fetch(serviceUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(req.body || {}),
+      body: JSON.stringify(req.body),
     });
 
-    const text = await upstream.text();
-    let payload;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = text;
-    }
-
-    return res.status(upstream.status).send(payload);
+    const payload = await upstream.json();
+    return res.status(upstream.status).json(payload);
   } catch (error) {
     console.error("[config.route] QUESTION_SERVICE_URL error:", error);
     return res.status(502).json({
