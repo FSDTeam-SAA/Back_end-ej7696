@@ -390,6 +390,29 @@ export const startExam = catchAsync(async (req, res) => {
   }
 
   if (!isUnlocked) {
+    const perExamAgg = await QuestionUsage.aggregate([
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(userId),
+          examId: new mongoose.Types.ObjectId(examId),
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$questionsUsed" } } },
+    ]);
+    const totalUsedForExam = perExamAgg?.[0]?.total || 0;
+    if (totalUsedForExam >= 2) {
+      throw new AppError(
+        httpStatus.FORBIDDEN,
+        "Free question limit reached for this exam. Please purchase to unlock more."
+      );
+    }
+    if (totalUsedForExam + effectiveQuestionCount > 2) {
+      throw new AppError(
+        httpStatus.FORBIDDEN,
+        "You can only generate 2 free questions for this exam. Reduce count or purchase this exam."
+      );
+    }
+
     const usageAgg = await QuestionUsage.aggregate([
       { $match: { userId: new mongoose.Types.ObjectId(userId), monthKey } },
       { $group: { _id: null, total: { $sum: "$questionsUsed" } } },
