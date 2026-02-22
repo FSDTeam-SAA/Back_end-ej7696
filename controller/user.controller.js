@@ -534,6 +534,23 @@ export const updateProfile = catchAsync(async (req, res) => {
 
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
+  if (req.body.email !== undefined) {
+    const nextEmail = req.body.email?.toString().trim();
+    if (!nextEmail) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Email is required");
+    }
+    if (nextEmail !== user.email) {
+      const existingUser = await User.findOne({ email: nextEmail });
+      if (existingUser && existingUser._id.toString() !== user._id.toString()) {
+        throw new AppError(
+          httpStatus.BAD_REQUEST,
+          "Email already exists, please try another email"
+        );
+      }
+      user.email = nextEmail;
+    }
+  }
+
   const editableFields = [
     "firstName",
     "lastName",
