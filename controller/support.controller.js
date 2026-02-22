@@ -205,11 +205,11 @@ export const replyToSupportTicket = catchAsync(async (req, res) => {
     subject: ticket.subject,
   });
 
-  await sendEmail(
+  sendEmail(
     ticket.email,
     "Support reply received",
     buildUserReplyEmail(ticket, reply)
-  );
+  ).catch(() => null);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
