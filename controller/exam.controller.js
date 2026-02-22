@@ -333,6 +333,24 @@ export const startExam = catchAsync(async (req, res) => {
   const monthKey = getMonthKey(new Date());
   const accessDoc = await ExamAccess.findOne({ userId, examId });
   const isUnlocked = accessDoc?.status === "unlocked";
+  const isProfessionalUser =
+    req.user?.subscriptionTier?.toString().toLowerCase() === "professional";
+  const isStarterUser = !isProfessionalUser;
+
+  if (isStarterUser && !isUnlocked) {
+    const hasSubmittedAttempt = await ExamAttempt.exists({
+      userId,
+      examId,
+      status: "SUBMITTED",
+    });
+    if (hasSubmittedAttempt) {
+      throw new AppError(
+        httpStatus.FORBIDDEN,
+        "Starter users can submit this exam only once. Please subscribe to continue."
+      );
+    }
+  }
+
   const maxQuestionsPerSession = isUnlocked
     ? 30
     : accessDoc?.maxQuestionsPerSession || 2;
