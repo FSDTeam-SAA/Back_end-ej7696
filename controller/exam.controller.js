@@ -25,6 +25,7 @@ const QUESTION_SERVICE_RETRY_DELAY_MS =
   Number(process.env.QUESTION_SERVICE_RETRY_DELAY_MS) || 800;
 const QUESTION_SERVICE_DEFAULT_EXAM_TYPE =
   process.env.QUESTION_SERVICE_DEFAULT_EXAM_TYPE?.toString().trim() || "";
+const SUBSCRIPTION_QUESTION_LIMIT_PER_EXAM = 1200;
 
 const parseStatus = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -82,6 +83,64 @@ const parseBoolean = (value) => {
   if (typeof value === "boolean") return value;
   const normalized = value.toString().toLowerCase();
   return ["true", "1", "yes", "y", "on"].includes(normalized);
+};
+
+const isActiveProfessionalSubscription = (user, referenceDate = new Date()) => {
+  if (!user) return false;
+  if (user.subscriptionTier?.toString().toLowerCase() !== "professional") {
+    return false;
+  }
+  if (!user.subscriptionExpiresAt) return false;
+  const expiresAt = new Date(user.subscriptionExpiresAt);
+  return expiresAt.getTime() > referenceDate.getTime();
+};
+
+const dateValuesEqual = (left, right) => {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  return new Date(left).getTime() === new Date(right).getTime();
+};
+
+const defaultProgress = () => ({
+  answers: [],
+  timeSpentSec: [],
+  currentIndex: 0,
+  flaggedQuestionIds: [],
+  lastSavedAt: null,
+});
+
+const buildQuestionUsage = ({
+  isSubscriptionLimited = false,
+  questionsGenerated = 0,
+  questionLimit = SUBSCRIPTION_QUESTION_LIMIT_PER_EXAM,
+  subscriptionStartedAt = null,
+  subscriptionExpiresAt = null,
+} = {}) => {
+  if (!isSubscriptionLimited) {
+    return {
+      mode: "standard",
+      questionLimit: null,
+      questionsGenerated: null,
+      questionsRemaining: null,
+      limitReached: false,
+      subscriptionStartedAt: subscriptionStartedAt || null,
+      subscriptionExpiresAt: subscriptionExpiresAt || null,
+    };
+  }
+
+  const used = toNumberOrZero(questionsGenerated);
+  const safeLimit = Math.max(toNumberOrZero(questionLimit), 1);
+  const remaining = Math.max(safeLimit - used, 0);
+
+  return {
+    mode: "subscription",
+    questionLimit: safeLimit,
+    questionsGenerated: used,
+    questionsRemaining: remaining,
+    limitReached: remaining === 0,
+    subscriptionStartedAt: subscriptionStartedAt || null,
+    subscriptionExpiresAt: subscriptionExpiresAt || null,
+  };
 };
 
 const normalizeAnswerValue = (value) => {
@@ -330,12 +389,28 @@ export const startExam = catchAsync(async (req, res) => {
       1
   );
 
-  const monthKey = getMonthKey(new Date());
+  const now = new Date();
+  const monthKey = getMonthKey(now);
   const accessDoc = await ExamAccess.findOne({ userId, examId });
   const isUnlocked = accessDoc?.status === "unlocked";
-  const isProfessionalUser =
-    req.user?.subscriptionTier?.toString().toLowerCase() === "professional";
+
+  const isProfessionalUser = isActiveProfessionalSubscription(req.user, now);
+  const subscriptionStartedAt =
+    isProfessionalUser && req.user?.subscriptionStartedAt
+      ? new Date(req.user.subscriptionStartedAt)
+      : null;
+  const subscriptionExpiresAt =
+    isProfessionalUser && req.user?.subscriptionExpiresAt
+      ? new Date(req.user.subscriptionExpiresAt)
+      : null;
   const isStarterUser = !isProfessionalUser;
+
+  if (isUnlocked && accessDoc?.purchaseType === "plan" && !isProfessionalUser) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "Professional subscription expired. Please purchase again to continue."
+    );
+  }
 
   if (isStarterUser && !isUnlocked) {
     const hasSubmittedAttempt = await ExamAttempt.exists({
@@ -354,7 +429,7 @@ export const startExam = catchAsync(async (req, res) => {
   const maxQuestionsPerSession = isUnlocked
     ? 30
     : accessDoc?.maxQuestionsPerSession || 2;
-  const effectiveQuestionCount = Math.min(nQuestion, maxQuestionsPerSession);
+  let effectiveQuestionCount = Math.min(nQuestion, maxQuestionsPerSession);
 
   const durationMinutes =
     parseDurationMinutes(
@@ -378,6 +453,38 @@ export const startExam = catchAsync(async (req, res) => {
     examId,
   });
 
+  const isSubscriptionLimited =
+    isUnlocked &&
+    isProfessionalUser &&
+    Boolean(subscriptionStartedAt && subscriptionExpiresAt);
+  const existingSubscriptionUsage = existingCache?.subscriptionUsage || {};
+  const cacheUsageForActiveSubscription =
+    isSubscriptionLimited &&
+    dateValuesEqual(existingSubscriptionUsage.cycleStart, subscriptionStartedAt) &&
+    dateValuesEqual(existingSubscriptionUsage.cycleEnd, subscriptionExpiresAt);
+  const questionsGeneratedForWindow = cacheUsageForActiveSubscription
+    ? toNumberOrZero(existingSubscriptionUsage.questionsGenerated)
+    : 0;
+  const currentQuestionUsage = buildQuestionUsage({
+    isSubscriptionLimited,
+    questionsGenerated: questionsGeneratedForWindow,
+    subscriptionStartedAt,
+    subscriptionExpiresAt,
+  });
+
+  if (isSubscriptionLimited) {
+    const remainingQuestionsForWindow = Math.max(
+      SUBSCRIPTION_QUESTION_LIMIT_PER_EXAM - questionsGeneratedForWindow,
+      0
+    );
+    if (
+      remainingQuestionsForWindow > 0 &&
+      effectiveQuestionCount > remainingQuestionsForWindow
+    ) {
+      effectiveQuestionCount = remainingQuestionsForWindow;
+    }
+  }
+
   if (
     existingCache &&
     !recreate &&
@@ -396,13 +503,8 @@ export const startExam = catchAsync(async (req, res) => {
         endTime: existingCache.endTime,
         durationMinutes: existingCache.durationMinutes,
         cachedAt: existingCache.updatedAt,
-        progress: existingCache.progress || {
-          answers: [],
-          timeSpentSec: [],
-          currentIndex: 0,
-          flaggedQuestionIds: [],
-          lastSavedAt: null,
-        },
+        progress: existingCache.progress || defaultProgress(),
+        questionUsage: currentQuestionUsage,
       },
     });
   }
@@ -448,6 +550,64 @@ export const startExam = catchAsync(async (req, res) => {
         "Requested questions exceed monthly free limit. Reduce count or purchase this exam."
       );
     }
+  }
+
+  let nextSubscriptionUsage = existingCache?.subscriptionUsage || {
+    cycleStart: null,
+    cycleEnd: null,
+    questionsGenerated: 0,
+    lastGeneratedAt: null,
+  };
+  let nextQuestionUsage = currentQuestionUsage;
+
+  if (isSubscriptionLimited) {
+    const projectedGeneratedCount =
+      questionsGeneratedForWindow + effectiveQuestionCount;
+
+    if (projectedGeneratedCount > SUBSCRIPTION_QUESTION_LIMIT_PER_EXAM) {
+      if (
+        existingCache &&
+        Array.isArray(existingCache.questions) &&
+        existingCache.questions.length > 0
+      ) {
+        return sendResponse(res, {
+          statusCode: httpStatus.OK,
+          success: true,
+          message:
+            "Subscription question limit reached. Returning previously cached questions.",
+          data: {
+            fromCache: true,
+            status: existingCache.status,
+            statusCode: existingCache.statusCode,
+            questions: applyQuestionIndex(existingCache.questions),
+            startTime: existingCache.startTime,
+            endTime: existingCache.endTime,
+            durationMinutes: existingCache.durationMinutes,
+            cachedAt: existingCache.updatedAt,
+            progress: existingCache.progress || defaultProgress(),
+            questionUsage: currentQuestionUsage,
+          },
+        });
+      }
+
+      throw new AppError(
+        httpStatus.FORBIDDEN,
+        "Subscription question limit reached. Please purchase again to continue."
+      );
+    }
+
+    nextSubscriptionUsage = {
+      cycleStart: subscriptionStartedAt,
+      cycleEnd: subscriptionExpiresAt,
+      questionsGenerated: projectedGeneratedCount,
+      lastGeneratedAt: now,
+    };
+    nextQuestionUsage = buildQuestionUsage({
+      isSubscriptionLimited: true,
+      questionsGenerated: projectedGeneratedCount,
+      subscriptionStartedAt,
+      subscriptionExpiresAt,
+    });
   }
 
   const questionPayload = {
@@ -735,13 +895,8 @@ export const startExam = catchAsync(async (req, res) => {
       statusCode: result?.status_code ?? externalRes.status,
       questions: parsedQuestions,
       rawResponse: result,
-      progress: {
-        answers: [],
-        timeSpentSec: [],
-        currentIndex: 0,
-        flaggedQuestionIds: [],
-        lastSavedAt: null,
-      },
+      progress: defaultProgress(),
+      subscriptionUsage: nextSubscriptionUsage,
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
@@ -779,13 +934,8 @@ export const startExam = catchAsync(async (req, res) => {
       endTime: cacheDoc.endTime,
       durationMinutes: cacheDoc.durationMinutes,
       fromCache: false,
-      progress: cacheDoc.progress || {
-        answers: [],
-        timeSpentSec: [],
-        currentIndex: 0,
-        flaggedQuestionIds: [],
-        lastSavedAt: null,
-      },
+      progress: cacheDoc.progress || defaultProgress(),
+      questionUsage: nextQuestionUsage,
     },
   });
 });
