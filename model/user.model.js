@@ -156,6 +156,14 @@ const userSchema = new Schema(
       enum: ["starter", "professional"],
       default: "starter",
     },
+    subscriptionStartedAt: {
+      type: Date,
+      default: null,
+    },
+    subscriptionExpiresAt: {
+      type: Date,
+      default: null,
+    },
     verificationInfo: {
       verified: { type: Boolean, default: false },
       token: { type: String, default: "" },

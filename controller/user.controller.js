@@ -13,6 +13,7 @@ import { sendEmail } from "../utils/sendEmail.js";
 
 const safeUserSelect =
   "-password -refreshToken -verificationInfo -password_reset_token";
+const PROFESSIONAL_SUBSCRIPTION_MONTHS = 3;
 
 const SUB_ADMIN_PERMISSIONS = [
   "view_user_list",
@@ -89,6 +90,12 @@ const parseIfJson = (value, fieldName) => {
       `Invalid JSON for ${fieldName}`
     );
   }
+};
+
+const addMonths = (date, months) => {
+  const result = new Date(date);
+  result.setMonth(result.getMonth() + months);
+  return result;
 };
 
 export const getProfile = catchAsync(async (req, res) => {
@@ -436,6 +443,18 @@ export const updateUserSubscription = catchAsync(async (req, res) => {
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   user.subscriptionTier = tier;
+  if (tier === "professional") {
+    const subscriptionStartedAt = new Date();
+    const subscriptionExpiresAt = addMonths(
+      subscriptionStartedAt,
+      PROFESSIONAL_SUBSCRIPTION_MONTHS
+    );
+    user.subscriptionStartedAt = subscriptionStartedAt;
+    user.subscriptionExpiresAt = subscriptionExpiresAt;
+  } else {
+    user.subscriptionStartedAt = null;
+    user.subscriptionExpiresAt = null;
+  }
   await user.save();
 
   const sanitizedUser = await User.findById(req.params.id).select(safeUserSelect);

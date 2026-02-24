@@ -35,6 +35,12 @@ const examQuestionCacheSchema = new Schema(
       score: { type: Schema.Types.Mixed, default: null },
       submittedAt: { type: Date, default: null },
     },
+    subscriptionUsage: {
+      cycleStart: { type: Date, default: null },
+      cycleEnd: { type: Date, default: null },
+      questionsGenerated: { type: Number, default: 0, min: 0 },
+      lastGeneratedAt: { type: Date, default: null },
+    },
   },
   { timestamps: true }
 );
