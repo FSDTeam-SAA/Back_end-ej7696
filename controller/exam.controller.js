@@ -12,20 +12,26 @@ import { ExamAccess } from "../model/examAccess.model.js";
 import { AppSetting } from "../model/appSetting.model.js";
 import { ExamRating } from "../model/examRating.model.js";
 import { User } from "../model/user.model.js";
+import {
+  QUESTION_BANK_DEFAULT_BATCH_SIZE,
+  QUESTION_BANK_DEFAULT_TARGET,
+  buildExamContentHash,
+  ensureQuestionBankCapacity,
+  generateQuestionBankInBatches,
+  getQuestionBankStatus,
+  listQuestionBankQuestions,
+  selectQuestionsFromBank,
+} from "../utils/questionBank.service.js";
 
-const QUESTION_SERVICE_URL =
-  process.env.QUESTION_SERVICE_URL 
-const QUESTION_SERVICE_TIMEOUT_MS =
-  Number(process.env.QUESTION_SERVICE_TIMEOUT_MS);
-const QUESTION_SERVICE_MODE =
-  process.env.QUESTION_SERVICE_MODE?.toLowerCase() || "form";
-const QUESTION_SERVICE_RETRY_COUNT =
-  Number(process.env.QUESTION_SERVICE_RETRY_COUNT) || 1;
-const QUESTION_SERVICE_RETRY_DELAY_MS =
-  Number(process.env.QUESTION_SERVICE_RETRY_DELAY_MS) || 800;
 const QUESTION_SERVICE_DEFAULT_EXAM_TYPE =
-  process.env.QUESTION_SERVICE_DEFAULT_EXAM_TYPE?.toString().trim() || "";
+  process.env.QUESTION_SERVICE_DEFAULT_EXAM_TYPE?.toString().trim() ||
+  "closed_book";
 const SUBSCRIPTION_QUESTION_LIMIT_PER_EXAM = 1200;
+const QUESTION_BANK_MIN_BATCH_SIZE = 1;
+const QUESTION_BANK_MAX_BATCH_SIZE = Math.max(
+  Number(process.env.QUESTION_BANK_MAX_BATCH_SIZE) || 1000,
+  QUESTION_BANK_MIN_BATCH_SIZE
+);
 
 const parseStatus = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -76,6 +82,34 @@ const parseDurationMinutes = (value) => {
     );
   }
   return Math.ceil(parsed);
+};
+
+const parsePositiveInteger = (value, fallback, fieldName) => {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `${fieldName} must be a positive number`
+    );
+  }
+  return Math.ceil(parsed);
+};
+
+const parseQuestionBankBatchSize = (value, fallback = QUESTION_BANK_DEFAULT_BATCH_SIZE) => {
+  const parsed = parsePositiveInteger(value, fallback, "batchSize");
+  return Math.max(
+    QUESTION_BANK_MIN_BATCH_SIZE,
+    Math.min(QUESTION_BANK_MAX_BATCH_SIZE, parsed)
+  );
+};
+
+const calculateTotalBatches = (targetCount, batchSize) => {
+  const safeTarget = Math.max(Number(targetCount) || 1, 1);
+  const safeBatchSize = Math.max(Number(batchSize) || 1, 1);
+  return Math.max(Math.ceil(safeTarget / safeBatchSize), 1);
 };
 
 const parseBoolean = (value) => {
@@ -161,6 +195,9 @@ const mergeIndexedArray = (existing, updates) => {
   });
   return base;
 };
+
+const uniqueStrings = (values = []) =>
+  [...new Set((Array.isArray(values) ? values : []).map((value) => value?.toString()).filter(Boolean))];
 
 const toNumberOrZero = (value) => {
   const parsed = Number(value);
@@ -349,8 +386,11 @@ export const getAllExamsAdmin = catchAsync(async (req, res) => {
 export const startExam = catchAsync(async (req, res) => {
   const userId = req.user?._id?.toString();
   const examId = req.params.id || req.body.examId;
-  const rawExamType = "closed_book"
-  //   req.body?.exam_type ?? req.query?.exam_type ?? req.body?.examType ?? null;
+  const rawExamType =
+    req.body?.exam_type ??
+    req.query?.exam_type ??
+    req.body?.examType ??
+    "closed_book";
   const normalizedExamType =
     rawExamType !== undefined && rawExamType !== null
       ? rawExamType.toString().trim()
@@ -471,6 +511,9 @@ export const startExam = catchAsync(async (req, res) => {
     subscriptionStartedAt,
     subscriptionExpiresAt,
   });
+  const questionBankContentHash = buildExamContentHash(exam);
+  const cacheMatchesCurrentBank =
+    existingCache?.questionBankContentHash === questionBankContentHash;
 
   if (isSubscriptionLimited) {
     const remainingQuestionsForWindow = Math.max(
@@ -483,30 +526,6 @@ export const startExam = catchAsync(async (req, res) => {
     ) {
       effectiveQuestionCount = remainingQuestionsForWindow;
     }
-  }
-
-  if (
-    existingCache &&
-    !recreate &&
-    existingCache.n_question === effectiveQuestionCount
-  ) {
-    return sendResponse(res, {
-      statusCode: httpStatus.OK,
-      success: true,
-      message: "Exam questions fetched from cache",
-      data: {
-        fromCache: true,
-        status: existingCache.status,
-        statusCode: existingCache.statusCode,
-        questions: applyQuestionIndex(existingCache.questions),
-        startTime: existingCache.startTime,
-        endTime: existingCache.endTime,
-        durationMinutes: existingCache.durationMinutes,
-        cachedAt: existingCache.updatedAt,
-        progress: existingCache.progress || defaultProgress(),
-        questionUsage: currentQuestionUsage,
-      },
-    });
   }
 
   if (!isUnlocked) {
@@ -567,6 +586,7 @@ export const startExam = catchAsync(async (req, res) => {
     if (projectedGeneratedCount > SUBSCRIPTION_QUESTION_LIMIT_PER_EXAM) {
       if (
         existingCache &&
+        cacheMatchesCurrentBank &&
         Array.isArray(existingCache.questions) &&
         existingCache.questions.length > 0
       ) {
@@ -610,276 +630,118 @@ export const startExam = catchAsync(async (req, res) => {
     });
   }
 
-  const questionPayload = {
-    ex_name: exam.name,
-    sheet_content: exam.effectivitySheetContent || "",
-    knowledge_content: exam.bodyOfKnowledgeContent || "",
-    n_question: effectiveQuestionCount,
-    exam_type,
-  };
-
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const sendQuestionRequest = async (useForm, attempt) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      QUESTION_SERVICE_TIMEOUT_MS
-    );
-    if (useForm) {
-      const params = new URLSearchParams();
-      params.append("ex_name", questionPayload.ex_name || "");
-      params.append("exam_type", questionPayload.exam_type);
-      params.append("sheet_content", questionPayload.sheet_content || "");
-      params.append("knowledge_content", questionPayload.knowledge_content || "");
-      params.append("n_question", questionPayload.n_question.toString());
-
-      try {
-        return await fetch(QUESTION_SERVICE_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: params.toString(),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timeout);
-      }
-    }
-
-    try {
-      return await fetch(QUESTION_SERVICE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(questionPayload),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
-  };
-
-  let externalRes;
-  let usedForm = QUESTION_SERVICE_MODE === "form";
-
- try {
-  let attempt = 0;
-
-  while (attempt <= QUESTION_SERVICE_RETRY_COUNT) {
-    try {
-      externalRes = await sendQuestionRequest(usedForm, attempt);
-      break;
-    } catch (error) {
-      const cause = error?.cause; // <-- undici/fetch root cause lives here
-
-      console.error("[QuestionService] attempt failed", {
-        attempt,
-        name: error?.name,
-        message: error?.message,
-
-        // fetch/undici details
-        causeName: cause?.name,
-        causeMessage: cause?.message,
-        causeCode: cause?.code,       // ECONNRESET / ETIMEDOUT / ECONNREFUSED, etc.
-        causeErrno: cause?.errno,
-        causeSyscall: cause?.syscall,
-        causeAddress: cause?.address,
-        causePort: cause?.port,
-
-        // generic fields (axios/etc)
-        code: error?.code,
-        status: error?.status ?? error?.response?.status,
-        data: error?.data ?? error?.response?.data,
-        body: error?.body,
-
-        stack: error?.stack,
-      });
-
-      // Retry on timeouts + transient network errors (common for gunicorn resets)
-      const transient = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"]);
-      const transientCode = cause?.code || error?.code;
-
-      if (error?.name === "AbortError" || transient.has(transientCode)) {
-        if (attempt >= QUESTION_SERVICE_RETRY_COUNT) {
-          throw new AppError(
-            httpStatus.REQUEST_TIMEOUT,
-            `Question service failed (${transientCode || "timeout"})`
-          );
-        }
-        await delay(QUESTION_SERVICE_RETRY_DELAY_MS);
-        attempt += 1;
-        continue;
-      }
-
-      // non-timeout errors: bubble up to outer catch
-      throw error;
-    }
+  if (
+    existingCache &&
+    !recreate &&
+    cacheMatchesCurrentBank &&
+    existingCache.n_question === effectiveQuestionCount
+  ) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Exam questions fetched from cache",
+      data: {
+        fromCache: true,
+        status: existingCache.status,
+        statusCode: existingCache.statusCode,
+        questions: applyQuestionIndex(existingCache.questions),
+        startTime: existingCache.startTime,
+        endTime: existingCache.endTime,
+        durationMinutes: existingCache.durationMinutes,
+        cachedAt: existingCache.updatedAt,
+        progress: existingCache.progress || defaultProgress(),
+        questionUsage: currentQuestionUsage,
+      },
+    });
   }
-} catch (error) {
-  const cause = error?.cause;
 
-  console.error("[QuestionService] final failure", {
-    name: error?.name,
-    message: error?.message,
+  const excludeQuestionHashes =
+    recreate && cacheMatchesCurrentBank
+      ? uniqueStrings([
+          ...(existingCache?.servedQuestionHashes || []),
+          ...(existingCache?.questionHashes || []),
+        ])
+      : [];
 
-    causeName: cause?.name,
-    causeMessage: cause?.message,
-    causeCode: cause?.code,
-    causeErrno: cause?.errno,
-    causeSyscall: cause?.syscall,
-    causeAddress: cause?.address,
-    causePort: cause?.port,
-
-    code: error?.code,
-    status: error?.status ?? error?.response?.status,
-    data: error?.data ?? error?.response?.data,
-    body: error?.body,
-    stack: error?.stack,
+  await ensureQuestionBankCapacity({
+    exam,
+    contentHash: questionBankContentHash,
+    requiredCount: effectiveQuestionCount,
+    excludeHashes: excludeQuestionHashes,
+    initiatedBy: req.user?._id || null,
+    trigger: recreate ? "user_regenerate" : "auto_refill",
+    examType: exam_type,
   });
 
-  const transient = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT"]);
-  const transientCode = cause?.code || error?.code;
+  let selectedBankDocs = await selectQuestionsFromBank({
+    examId,
+    contentHash: questionBankContentHash,
+    count: effectiveQuestionCount,
+    excludeHashes: excludeQuestionHashes,
+  });
 
-  if (error?.name === "AbortError" || transient.has(transientCode)) {
+  if (selectedBankDocs.length < effectiveQuestionCount && excludeQuestionHashes.length) {
+    const immediatePreviousHashes =
+      cacheMatchesCurrentBank && Array.isArray(existingCache?.questionHashes)
+        ? uniqueStrings(existingCache.questionHashes)
+        : [];
+
+    selectedBankDocs = await selectQuestionsFromBank({
+      examId,
+      contentHash: questionBankContentHash,
+      count: effectiveQuestionCount,
+      excludeHashes: immediatePreviousHashes,
+    });
+  }
+
+  if (selectedBankDocs.length < effectiveQuestionCount) {
+    await ensureQuestionBankCapacity({
+      exam,
+      contentHash: questionBankContentHash,
+      requiredCount: effectiveQuestionCount,
+      excludeHashes: [],
+      initiatedBy: req.user?._id || null,
+      trigger: recreate ? "user_regenerate" : "auto_refill",
+      examType: exam_type,
+    });
+
+    selectedBankDocs = await selectQuestionsFromBank({
+      examId,
+      contentHash: questionBankContentHash,
+      count: effectiveQuestionCount,
+      excludeHashes:
+        cacheMatchesCurrentBank && Array.isArray(existingCache?.questionHashes)
+          ? uniqueStrings(existingCache.questionHashes)
+          : [],
+    });
+  }
+
+  if (selectedBankDocs.length < effectiveQuestionCount) {
     throw new AppError(
-      httpStatus.REQUEST_TIMEOUT,
-      `Question service failed (${transientCode || "timeout"})`
+      httpStatus.SERVICE_UNAVAILABLE,
+      "Question bank does not have enough approved questions yet. Please retry shortly."
     );
   }
 
-  throw new AppError(httpStatus.BAD_GATEWAY, "Failed to reach question service");
-}
+  const selectedQuestions = selectedBankDocs.map((doc) => doc.question);
+  const selectedQuestionHashes = uniqueStrings(
+    selectedBankDocs.map((doc) => doc.questionHash)
+  );
+  const previousServedHashes = cacheMatchesCurrentBank
+    ? uniqueStrings(existingCache?.servedQuestionHashes || [])
+    : [];
+  const nextServedQuestionHashes = uniqueStrings([
+    ...previousServedHashes,
+    ...selectedQuestionHashes,
+  ]);
 
-
-
-  const contentType = externalRes.headers.get("content-type") || "";
-  let result = null;
-  let rawText = null;
-
-  if (contentType.includes("application/json")) {
-    result = await externalRes.json().catch(() => null);
-  } else {
-    rawText = await externalRes.text().catch(() => null);
-    if (rawText) {
-      try {
-        result = JSON.parse(rawText);
-      } catch (err) {
-        result = null;
-      }
-    }
-  }
-
-  const missingFields =
-    result?.detail &&
-    Array.isArray(result.detail) &&
-    result.detail.some(
-      (item) =>
-        item?.type === "missing" &&
-        Array.isArray(item?.loc) &&
-        item.loc.includes("body")
-    );
-
-  const parsingError =
-    externalRes.status === 400 &&
-    (rawText?.includes("error parsing the body") ||
-      JSON.stringify(result || {}).includes("error parsing the body"));
-
-  if (
-    !externalRes.ok &&
-    (parsingError || (externalRes.status === 422 && missingFields)) &&
-    QUESTION_SERVICE_MODE !== "auto"
-  ) {
-    // Retry once with the opposite content type when body parsing fails.
-    try {
-      let attempt = 0;
-      while (attempt <= QUESTION_SERVICE_RETRY_COUNT) {
-        try {
-          externalRes = await sendQuestionRequest(!usedForm, attempt);
-          usedForm = !usedForm;
-          break;
-        } catch (error) {
-          if (error.name === "AbortError") {
-            if (attempt >= QUESTION_SERVICE_RETRY_COUNT) {
-              throw new AppError(
-                httpStatus.REQUEST_TIMEOUT,
-                "Question service timed out"
-              );
-            }
-            await delay(QUESTION_SERVICE_RETRY_DELAY_MS);
-            attempt += 1;
-            continue;
-          }
-          throw error;
-        }
-      }
-    } catch (error) {
-      if (error.name === "AbortError") {
-        throw new AppError(
-          httpStatus.REQUEST_TIMEOUT,
-          "Question service timed out"
-        );
-      }
-      throw new AppError(
-        httpStatus.BAD_GATEWAY,
-        "Failed to reach question service"
-      );
-    }
-
-    rawText = null;
-    result = null;
-    const retryContentType = externalRes.headers.get("content-type") || "";
-    if (retryContentType.includes("application/json")) {
-      result = await externalRes.json().catch(() => null);
-    } else {
-      rawText = await externalRes.text().catch(() => null);
-      if (rawText) {
-        try {
-          result = JSON.parse(rawText);
-        } catch (err) {
-          result = null;
-        }
-      }
-    }
-  }
-
-  if (!externalRes.ok) {
-    const snippet =
-      (rawText || (result ? JSON.stringify(result) : "")).slice(0, 500) || "";
-    throw new AppError(
-      httpStatus.BAD_GATEWAY,
-      `Question service error (${externalRes.status}). ${snippet}`.trim()
-    );
-  }
-
-  if (!result && !rawText) {
-    throw new AppError(
-      httpStatus.BAD_GATEWAY,
-      "Question service returned an empty response"
-    );
-  }
-
-  const payload = result?.text ?? result?.questions ?? result ?? rawText;
-  let parsedQuestions = payload;
-  if (typeof payload === "string") {
-    try {
-      parsedQuestions = JSON.parse(payload);
-    } catch (err) {
-      parsedQuestions = payload;
-    }
-  }
-
-  if (!parsedQuestions) {
-    throw new AppError(
-      httpStatus.BAD_GATEWAY,
-      "Question service returned an unexpected response"
-    );
-  }
-
-  const startTime = new Date();
-  const endTime =
+  const bankStartTime = new Date();
+  const bankEndTime =
     durationMinutes && durationMinutes > 0
-      ? new Date(startTime.getTime() + durationMinutes * 60 * 1000)
+      ? new Date(bankStartTime.getTime() + durationMinutes * 60 * 1000)
       : null;
 
-  const cacheDoc = await ExamQuestionCache.findOneAndUpdate(
+  const bankCacheDoc = await ExamQuestionCache.findOneAndUpdate(
     { userId, examId },
     {
       userId,
@@ -889,12 +751,20 @@ export const startExam = catchAsync(async (req, res) => {
       knowledgeContent: exam.bodyOfKnowledgeContent || "",
       n_question: effectiveQuestionCount,
       durationMinutes,
-      startTime,
-      endTime,
-      status: result?.status ?? "success",
-      statusCode: result?.status_code ?? externalRes.status,
-      questions: parsedQuestions,
-      rawResponse: result,
+      startTime: bankStartTime,
+      endTime: bankEndTime,
+      status: "success",
+      statusCode: httpStatus.OK,
+      questions: selectedQuestions,
+      questionHashes: selectedQuestionHashes,
+      servedQuestionHashes: nextServedQuestionHashes,
+      questionBankContentHash,
+      questionSource: "question_bank",
+      rawResponse: {
+        source: "question_bank",
+        contentHash: questionBankContentHash,
+        selectedCount: selectedQuestions.length,
+      },
       progress: defaultProgress(),
       subscriptionUsage: nextSubscriptionUsage,
     },
@@ -912,30 +782,162 @@ export const startExam = catchAsync(async (req, res) => {
     {
       userId,
       examId,
-      startedAt: cacheDoc.startTime || startTime,
-      endedAt: cacheDoc.endTime || null,
+      startedAt: bankCacheDoc.startTime || bankStartTime,
+      endedAt: bankCacheDoc.endTime || null,
       status: "IN_PROGRESS",
-      unansweredCount: Array.isArray(cacheDoc.questions)
-        ? cacheDoc.questions.length
+      unansweredCount: Array.isArray(bankCacheDoc.questions)
+        ? bankCacheDoc.questions.length
         : 0,
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
+  return sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam started and questions fetched from question bank",
+    data: {
+      status: "success",
+      statusCode: httpStatus.OK,
+      questions: applyQuestionIndex(bankCacheDoc.questions),
+      startTime: bankCacheDoc.startTime,
+      endTime: bankCacheDoc.endTime,
+      durationMinutes: bankCacheDoc.durationMinutes,
+      fromCache: false,
+      progress: bankCacheDoc.progress || defaultProgress(),
+      questionUsage: nextQuestionUsage,
+    },
+  });
+});
+
+export const generateExamQuestionBank = catchAsync(async (req, res) => {
+  const exam = await Exam.findById(req.params.id).lean();
+  if (!exam) {
+    throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+  }
+
+  const targetCount = parsePositiveInteger(
+    req.body?.targetCount ?? req.query?.targetCount,
+    QUESTION_BANK_DEFAULT_TARGET,
+    "targetCount"
+  );
+  const batchSize = parseQuestionBankBatchSize(
+    req.body?.batchSize ?? req.query?.batchSize,
+    QUESTION_BANK_DEFAULT_BATCH_SIZE
+  );
+  const totalBatches = calculateTotalBatches(targetCount, batchSize);
+  const requestedMaxBatchesPerRun = parsePositiveInteger(
+    req.body?.maxBatchesPerRun ?? req.query?.maxBatchesPerRun,
+    totalBatches,
+    "maxBatchesPerRun"
+  );
+  const maxBatchesPerRun = Math.min(requestedMaxBatchesPerRun, totalBatches);
+
+  const rawExamType =
+    req.body?.exam_type ?? req.query?.exam_type ?? QUESTION_SERVICE_DEFAULT_EXAM_TYPE;
+  const normalizedExamType =
+    rawExamType !== undefined && rawExamType !== null
+      ? rawExamType.toString().trim()
+      : "";
+  const examType =
+    normalizedExamType && normalizedExamType.toLowerCase() !== "standard"
+      ? normalizedExamType
+      : QUESTION_SERVICE_DEFAULT_EXAM_TYPE;
+
+  const contentHash = buildExamContentHash(exam);
+  const summary = await generateQuestionBankInBatches({
+    exam,
+    contentHash,
+    targetCount,
+    batchSize,
+    totalBatches,
+    maxBatchesPerRun,
+    initiatedBy: req.user?._id || null,
+    trigger: "manual",
+    examType,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: !summary.failed,
+    message: summary.failed
+      ? "Question bank generation completed with failures"
+      : "Question bank generation completed",
+    data: {
+      examId: exam._id,
+      examName: exam.name,
+      contentHash,
+      ...summary,
+    },
+  });
+});
+
+export const getExamQuestionBankAdminStatus = catchAsync(async (req, res) => {
+  const exam = await Exam.findById(req.params.id).lean();
+  if (!exam) {
+    throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+  }
+
+  const contentHash = buildExamContentHash(exam);
+  const status = await getQuestionBankStatus({
+    examId: exam._id,
+    contentHash,
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "Exam started and questions fetched",
+    message: "Exam question bank status fetched",
     data: {
-      status: result?.status ?? "success",
-      statusCode: result?.status_code ?? externalRes.status,
-      questions: applyQuestionIndex(cacheDoc.questions),
-      startTime: cacheDoc.startTime,
-      endTime: cacheDoc.endTime,
-      durationMinutes: cacheDoc.durationMinutes,
-      fromCache: false,
-      progress: cacheDoc.progress || defaultProgress(),
-      questionUsage: nextQuestionUsage,
+      examId: exam._id,
+      examName: exam.name,
+      defaults: {
+        targetCount: QUESTION_BANK_DEFAULT_TARGET,
+        batchSize: QUESTION_BANK_DEFAULT_BATCH_SIZE,
+        totalBatches: calculateTotalBatches(
+          QUESTION_BANK_DEFAULT_TARGET,
+          QUESTION_BANK_DEFAULT_BATCH_SIZE
+        ),
+      },
+      ...status,
+    },
+  });
+});
+
+export const getExamQuestionBankQuestionsAdmin = catchAsync(async (req, res) => {
+  const exam = await Exam.findById(req.params.id).lean();
+  if (!exam) {
+    throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+  }
+
+  const contentHash = buildExamContentHash(exam);
+  const page = parsePositiveInteger(req.query?.page, 1, "page");
+  const limit = Math.min(
+    parsePositiveInteger(req.query?.limit, 20, "limit"),
+    200
+  );
+  const search =
+    req.query?.search !== undefined && req.query?.search !== null
+      ? req.query.search.toString()
+      : "";
+
+  const data = await listQuestionBankQuestions({
+    examId: exam._id,
+    contentHash,
+    page,
+    limit,
+    search,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam question bank questions fetched",
+    data: {
+      examId: exam._id,
+      examName: exam.name,
+      contentHash,
+      ...data,
     },
   });
 });
@@ -943,6 +945,7 @@ export const startExam = catchAsync(async (req, res) => {
 export const updateExam = catchAsync(async (req, res) => {
   const exam = await Exam.findById(req.params.id);
   if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+  const previousContentHash = buildExamContentHash(exam);
 
   const allowedFields = [
     "name",
@@ -974,11 +977,111 @@ export const updateExam = catchAsync(async (req, res) => {
 
   await exam.save();
 
+  const updatedExamData = sanitizeExam(exam);
+  const updatedContentHash = buildExamContentHash(updatedExamData);
+  const contentSignatureChanged = previousContentHash !== updatedContentHash;
+
+  let questionBankRebuild = {
+    triggered: false,
+    reason: contentSignatureChanged
+      ? "content_changed_pending_trigger"
+      : "content_unchanged",
+    contentHash: updatedContentHash,
+    targetCount: null,
+    batchSize: null,
+    totalBatches: null,
+    maxBatchesPerRun: null,
+  };
+
+  if (contentSignatureChanged) {
+    const autoRegenerateQuestionBank = parseBoolean(
+      req.body?.autoRegenerateQuestionBank ??
+        req.body?.regenerateQuestionBank ??
+        req.query?.autoRegenerateQuestionBank ??
+        true
+    );
+    const targetCount = parsePositiveInteger(
+      req.body?.targetCount ?? req.query?.targetCount,
+      QUESTION_BANK_DEFAULT_TARGET,
+      "targetCount"
+    );
+    const batchSize = parseQuestionBankBatchSize(
+      req.body?.batchSize ?? req.query?.batchSize,
+      QUESTION_BANK_DEFAULT_BATCH_SIZE
+    );
+    const totalBatches = calculateTotalBatches(targetCount, batchSize);
+    const requestedMaxBatchesPerRun = parsePositiveInteger(
+      req.body?.maxBatchesPerRun ?? req.query?.maxBatchesPerRun,
+      totalBatches,
+      "maxBatchesPerRun"
+    );
+    const maxBatchesPerRun = Math.min(requestedMaxBatchesPerRun, totalBatches);
+
+    const rawExamType =
+      req.body?.exam_type ??
+      req.query?.exam_type ??
+      QUESTION_SERVICE_DEFAULT_EXAM_TYPE;
+    const normalizedExamType =
+      rawExamType !== undefined && rawExamType !== null
+        ? rawExamType.toString().trim()
+        : "";
+    const examType =
+      normalizedExamType && normalizedExamType.toLowerCase() !== "standard"
+        ? normalizedExamType
+        : QUESTION_SERVICE_DEFAULT_EXAM_TYPE;
+
+    questionBankRebuild = {
+      triggered: autoRegenerateQuestionBank,
+      reason: autoRegenerateQuestionBank
+        ? "content_changed_auto_regeneration_started"
+        : "content_changed_auto_regeneration_disabled",
+      contentHash: updatedContentHash,
+      targetCount,
+      batchSize,
+      totalBatches,
+      maxBatchesPerRun,
+    };
+
+    if (autoRegenerateQuestionBank) {
+      void generateQuestionBankInBatches({
+        exam: updatedExamData,
+        contentHash: updatedContentHash,
+        targetCount,
+        batchSize,
+        totalBatches,
+        maxBatchesPerRun,
+        initiatedBy: req.user?._id || null,
+        trigger: "exam_update",
+        examType,
+      })
+        .then((summary) => {
+          console.info("[QuestionBank] exam update regeneration summary", {
+            examId: updatedExamData?._id?.toString?.() || updatedExamData?._id,
+            contentHash: updatedContentHash,
+            approvedAfter: summary?.approvedAfter,
+            insertedThisRun: summary?.insertedThisRun,
+            completedTarget: summary?.completedTarget,
+            failed: summary?.failed,
+          });
+        })
+        .catch((error) => {
+          console.error("[QuestionBank] exam update regeneration failed", {
+            examId: updatedExamData?._id?.toString?.() || updatedExamData?._id,
+            contentHash: updatedContentHash,
+            message: error?.message,
+          });
+        });
+    }
+  }
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Exam updated successfully",
-    data: sanitizeExam(exam),
+    data: {
+      ...updatedExamData,
+      questionBankRebuild,
+    },
   });
 });
 
