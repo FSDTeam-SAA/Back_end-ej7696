@@ -22,6 +22,14 @@ const examQuestionCacheSchema = new Schema(
     status: { type: Schema.Types.Mixed, default: null },
     statusCode: { type: Schema.Types.Mixed, default: null },
     questions: { type: Schema.Types.Mixed, default: [] },
+    questionHashes: { type: [String], default: [] },
+    servedQuestionHashes: { type: [String], default: [] },
+    questionBankContentHash: { type: String, default: "" },
+    questionSource: {
+      type: String,
+      enum: ["question_bank", "question_service"],
+      default: "question_bank",
+    },
     rawResponse: { type: Schema.Types.Mixed, default: {} },
     progress: {
       answers: { type: Schema.Types.Mixed, default: [] },
