@@ -156,7 +156,11 @@ export const login = catchAsync(async (req, res) => {
   );
 
   user.refreshToken = refreshToken;
-  let _user = await user.save();
+  await user.save();
+
+  const userObj = user.toObject();
+  delete userObj.password;
+  delete userObj.refreshToken;
 
   res.cookie("refreshToken", refreshToken, {
     secure: true,
@@ -174,7 +178,8 @@ export const login = catchAsync(async (req, res) => {
       refreshToken: refreshToken,
       role: user.role,
       _id: user._id,
-      user: user,
+      mustChangePassword: Boolean(user.mustChangePassword),
+      user: userObj,
     },
   });
 });
@@ -236,6 +241,7 @@ export const resetPassword = catchAsync(async (req, res) => {
 
   user.password = password;
   user.password_reset_token = undefined;
+  user.mustChangePassword = false;
   await user.save();
 
   sendResponse(res, {
@@ -286,10 +292,15 @@ export const verifyEmail = catchAsync(async (req, res) => {
 });
 
 export const changePassword = catchAsync(async (req, res) => {
-  const { oldPassword, newPassword } = req.body;
+  const oldPassword = req.body?.oldPassword ?? req.body?.currentPassword;
+  const newPassword = req.body?.newPassword;
+  const confirmPassword = req.body?.confirmPassword;
 
   if (!oldPassword || !newPassword) {
     throw new AppError(httpStatus.BAD_REQUEST, "Old password and new password are required");
+  }
+  if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Passwords don't match");
   }
   if (oldPassword === newPassword) {
     throw new AppError(httpStatus.BAD_REQUEST, "Old password and new password cannot be same");
@@ -303,6 +314,7 @@ export const changePassword = catchAsync(async (req, res) => {
   if (!matched) throw new AppError(httpStatus.UNAUTHORIZED, "Current password wrong");
 
   user.password = newPassword;
+  user.mustChangePassword = false;
   await user.save();
 
   sendResponse(res, {
