@@ -169,6 +169,10 @@ const userSchema = new Schema(
       token: { type: String, default: "" },
     },
     password_reset_token: { type: String, default: "" },
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
+    },
     fine: { type: Number, default: 0 },
     refreshToken: { type: String, default: "" },
     review: [

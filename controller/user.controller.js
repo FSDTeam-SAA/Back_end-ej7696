@@ -536,6 +536,7 @@ export const adminSetTemporaryPassword = catchAsync(async (req, res) => {
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   user.password = password;
+  user.mustChangePassword = true;
   await user.save();
 
   const sanitizedUser = await User.findById(req.params.id).select(safeUserSelect);
@@ -638,9 +639,11 @@ export const updateProfile = catchAsync(async (req, res) => {
 });
 
 export const changePassword = catchAsync(async (req, res) => {
-  const { currentPassword, newPassword, confirmPassword } = req.body;
+  const currentPassword = req.body?.currentPassword ?? req.body?.oldPassword;
+  const newPassword = req.body?.newPassword;
+  const confirmPassword = req.body?.confirmPassword;
 
-  if (newPassword !== confirmPassword)
+  if (confirmPassword !== undefined && newPassword !== confirmPassword)
     throw new AppError(httpStatus.BAD_REQUEST, "Passwords don't match");
 
   const user = await User.findById(req.user._id).select("+password");
@@ -649,6 +652,7 @@ export const changePassword = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.UNAUTHORIZED, "Current password wrong");
   }
   user.password = newPassword;
+  user.mustChangePassword = false;
 
   await user.save();
 
