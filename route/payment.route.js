@@ -12,6 +12,7 @@ import {
   getProfessionalPlan,
   getPricingSettings,
   listPurchases,
+  manualLockExam,
   manualUnlockExam,
   updatePricingSettings,
 } from "../controller/payment.controller.js";
@@ -39,6 +40,7 @@ router.post(
 );
 router.get("/plan/professional", getProfessionalPlan);
 router.post("/admin/exam/:examId/unlock", protect, requirePermission("manual_exam_unlocks"), manualUnlockExam);
+router.post("/admin/exam/:examId/lock", protect, requirePermission("manual_exam_unlocks"), manualLockExam);
 router.get("/admin/pricing", protect, requirePermission("manage_subscription"), getPricingSettings);
 router.patch("/admin/pricing", protect, requirePermission("manage_subscription"), updatePricingSettings);
 router.get("/admin/summary", protect, requirePermission("view_billing_summary"), getRevenueSummary);

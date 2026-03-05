@@ -770,6 +770,49 @@ export const manualUnlockExam = catchAsync(async (req, res) => {
   });
 });
 
+export const manualLockExam = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const examId = req.params.examId;
+  if (!userId || !examId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId and examId are required");
+  }
+
+  const user = await User.findById(userId);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  const exam = await Exam.findById(examId).lean();
+  if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+
+  const existingAccess = await ExamAccess.findOne({ userId, examId, status: "unlocked" });
+  if (!existingAccess) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Exam already locked",
+      data: { locked: true },
+    });
+  }
+
+  if (existingAccess.purchaseType !== "manual") {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Only manually unlocked exams can be locked manually"
+    );
+  }
+
+  existingAccess.status = "free";
+  existingAccess.maxQuestionsPerSession = 2;
+  existingAccess.purchasedAt = null;
+  await existingAccess.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam locked manually",
+    data: existingAccess,
+  });
+});
+
 export const updatePricingSettings = catchAsync(async (req, res) => {
   const updates = {};
   if (req.body.professionalPlanPrice !== undefined) {
