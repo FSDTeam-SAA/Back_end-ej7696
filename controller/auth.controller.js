@@ -10,6 +10,14 @@ import { User } from "./../model/user.model.js";
 const createSessionId = () =>
   `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
 
+const normalizeDeviceId = (deviceId) => deviceId?.toString().trim() || "";
+
+const clearUserSessionState = (user) => {
+  user.refreshToken = "";
+  user.activeSessionId = "";
+  user.activeDeviceId = "";
+};
+
 const buildJwtPayload = (user, sessionId) => ({
   _id: user._id,
   email: user.email,
@@ -49,7 +57,8 @@ export const register = catchAsync(async (req, res) => {
       "Email already exists, please try another email"
     );
 
-  if (!deviceId || !deviceId.toString().trim()) {
+  const normalizedDeviceId = normalizeDeviceId(deviceId);
+  if (!normalizedDeviceId) {
     throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
   }
 
@@ -77,7 +86,7 @@ export const register = catchAsync(async (req, res) => {
   );
   user.refreshToken = refreshToken;
   user.activeSessionId = sessionId;
-  user.activeDeviceId = deviceId.toString().trim();
+  user.activeDeviceId = normalizedDeviceId;
   await user.save();
   user.accessToken = accessToken;
 
@@ -129,10 +138,10 @@ export const login = catchAsync(async (req, res) => {
   if (user.status !== "active") {
     throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
   }
-  if (!deviceId || !deviceId.toString().trim()) {
+  const normalizedDeviceId = normalizeDeviceId(deviceId);
+  if (!normalizedDeviceId) {
     throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
   }
-  const normalizedDeviceId = deviceId.toString().trim();
 
   // Enforce one active device per account.
   // If another device has an active session, block login.
@@ -150,16 +159,19 @@ export const login = catchAsync(async (req, res) => {
     }
 
     if (hasActiveSession) {
-      throw new AppError(
-        httpStatus.CONFLICT,
-        "This account is already logged in on another device"
-      );
+      return sendResponse(res, {
+        statusCode: httpStatus.CONFLICT,
+        success: false,
+        message: "This account is already logged in on another device",
+        data: {
+          activeDeviceId: user.activeDeviceId,
+          canClearDeviceSession: true,
+        },
+      });
     }
 
     // Stale session data from expired refresh token; clear and continue login.
-    user.activeSessionId = "";
-    user.activeDeviceId = "";
-    user.refreshToken = "";
+    clearUserSessionState(user);
   }
   if (!(await User.isOTPVerified(user._id))) {
     const otp = generateOTP();
@@ -223,6 +235,48 @@ export const login = catchAsync(async (req, res) => {
       _id: user._id,
       mustChangePassword: Boolean(user.mustChangePassword),
       user: userObj,
+    },
+  });
+});
+
+export const clearDeviceSession = catchAsync(async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Email and password are required");
+  }
+
+  const user = await User.isUserExistsByEmail(email);
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+  if (
+    user?.password &&
+    !(await User.isPasswordMatched(password, user.password))
+  ) {
+    throw new AppError(httpStatus.FORBIDDEN, "Password is not correct");
+  }
+  if (user.status !== "active") {
+    throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
+  }
+
+  const previousDeviceId = user.activeDeviceId || "";
+  clearUserSessionState(user);
+  await user.save();
+
+  res.clearCookie("refreshToken", {
+    secure: true,
+    httpOnly: true,
+    sameSite: "none",
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Device session cleared successfully",
+    data: {
+      clearedDeviceId: previousDeviceId,
+      canLoginAnotherDevice: true,
     },
   });
 });
@@ -375,7 +429,8 @@ export const refreshToken = catchAsync(async (req, res) => {
   if (!refreshToken) {
     throw new AppError(400, "Refresh token is required");
   }
-  if (!deviceId || !deviceId.toString().trim()) {
+  const normalizedDeviceId = normalizeDeviceId(deviceId);
+  if (!normalizedDeviceId) {
     throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
   }
 
@@ -387,7 +442,7 @@ export const refreshToken = catchAsync(async (req, res) => {
   if (!decoded.sid || !user.activeSessionId || decoded.sid !== user.activeSessionId) {
     throw new AppError(401, "Session expired. Please login again.");
   }
-  if (!user.activeDeviceId || user.activeDeviceId !== deviceId.toString().trim()) {
+  if (!user.activeDeviceId || user.activeDeviceId !== normalizedDeviceId) {
     throw new AppError(401, "Session expired. Please login again.");
   }
   if (user.status !== "active") {
@@ -424,6 +479,11 @@ export const logout = catchAsync(async (req, res) => {
     { refreshToken: "", activeSessionId: "", activeDeviceId: "" },
     { new: true }
   );
+  res.clearCookie("refreshToken", {
+    secure: true,
+    httpOnly: true,
+    sameSite: "none",
+  });
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
