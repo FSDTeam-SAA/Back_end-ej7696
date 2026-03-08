@@ -7,10 +7,13 @@ import {
   getAllExamsAdmin,
   getAllExamReviewsAdmin,
   getPublishedExamReviews,
+  getExamQuestionBankQuestionsAdmin,
+  getExamQuestionBankAdminStatus,
   saveExamProgress,
   submitExamAnswers,
   submitExamReview,
   startExam,
+  generateExamQuestionBank,
   updateExamReview,
   updateExam,
   updateExamStatus,
@@ -40,6 +43,26 @@ router.delete(
   protect,
   requirePermission("manage_exams_questions"),
   deleteExamReview
+);
+
+// -----------generate Exam Question Bank------------------
+router.get(
+  "/:id/question-bank/status",
+  protect,
+  requirePermission("manage_exams_questions"),
+  getExamQuestionBankAdminStatus
+);
+router.get(
+  "/:id/question-bank/questions",
+  protect,
+  requirePermission("manage_exams_questions"),
+  getExamQuestionBankQuestionsAdmin
+);
+router.post(
+  "/:id/question-bank/generate",
+  protect,
+  requirePermission("manage_exams_questions"),
+  generateExamQuestionBank
 );
 router.post("/:id/start", protect, startExam);
 router.get("/:id/start", protect, startExam);

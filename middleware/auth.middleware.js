@@ -3,6 +3,28 @@ import httpStatus from "http-status";
 import AppError from "../errors/AppError.js";
 import { User } from "./../model/user.model.js";
 
+const normalizeExpiredProfessionalSubscription = async (user) => {
+  if (!user) return user;
+  const isProfessional =
+    user.subscriptionTier?.toString().toLowerCase() === "professional";
+  if (!isProfessional) return user;
+
+  const now = new Date();
+  const expiresAt = user.subscriptionExpiresAt
+    ? new Date(user.subscriptionExpiresAt)
+    : null;
+
+  if (expiresAt && expiresAt.getTime() > now.getTime()) {
+    return user;
+  }
+
+  user.subscriptionTier = "starter";
+  user.subscriptionStartedAt = null;
+  user.subscriptionExpiresAt = null;
+  await user.save();
+  return user;
+};
+
 export const protect = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) throw new AppError(httpStatus.NOT_FOUND, "Token not found");
@@ -38,7 +60,7 @@ export const optionalProtect = async (req, res, next) => {
 
   try {
     const decoded = await jwt.verify(token, process.env.JWT_ACCESS_SECRET);
-    const user = await User.findById(decoded._id);
+    let user = await User.findById(decoded._id);
     if (user && (await User.isOTPVerified(user._id))) {
       if (user.status !== "active") {
         throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");

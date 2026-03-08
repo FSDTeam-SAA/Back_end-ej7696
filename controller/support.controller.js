@@ -41,6 +41,17 @@ const buildUserReplyEmail = (ticket, message) => `
   </div>
 `;
 
+const buildAdminReplyEmail = (ticket, message, senderRole = "user") => `
+  <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+    <h2>New reply on support ticket</h2>
+    <p><strong>Subject:</strong> ${ticket.subject}</p>
+    <p><strong>From:</strong> ${senderRole}</p>
+    <div style="padding: 12px; background: #f6f6f6; border-radius: 6px;">
+      ${message.message}
+    </div>
+  </div>
+`;
+
 const notifyUserSocket = (req, userId, payload) => {
   const io = req.app.get("io");
   if (!io) return;
@@ -73,6 +84,16 @@ const buildAdminEmailRecipients = (supportAdmins = []) => {
   const envEmail = (process.env.ADMIN_EMAIL || "").trim();
   if (envEmail) emails.add(envEmail);
   return Array.from(emails);
+};
+
+const hasSupportManagerAccess = (user) => {
+  const role = user?.role?.toString().toLowerCase();
+  if (role === "admin") return true;
+  if (role !== "sub-admin") return false;
+  const permissions = Array.isArray(user?.subAdminPermissions)
+    ? user.subAdminPermissions
+    : [];
+  return permissions.includes("manage_support_tickets");
 };
 
 export const createSupportTicket = catchAsync(async (req, res) => {
@@ -159,11 +180,13 @@ export const createSupportTicket = catchAsync(async (req, res) => {
 });
 
 export const replyToSupportTicket = catchAsync(async (req, res) => {
-  const adminId = req.user?._id;
+  const actorId = req.user?._id;
+  const actorRole = req.user?.role?.toString().toLowerCase() || "user";
+  const canManageTickets = hasSupportManagerAccess(req.user);
   const ticketId = req.params.ticketId;
   const { message } = req.body;
 
-  if (!adminId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  if (!actorId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   if (!ticketId || !message) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
@@ -173,6 +196,16 @@ export const replyToSupportTicket = catchAsync(async (req, res) => {
 
   const ticket = await SupportTicket.findById(ticketId);
   if (!ticket) throw new AppError(httpStatus.NOT_FOUND, "Ticket not found");
+  const isTicketOwner = ticket.userId?.toString() === actorId.toString();
+  const isUser = actorRole === "user";
+
+  if (!canManageTickets && !isUser) {
+    throw new AppError(httpStatus.FORBIDDEN, "Access denied.");
+  }
+
+  if (isUser && !isTicketOwner) {
+    throw new AppError(httpStatus.FORBIDDEN, "Access denied.");
+  }
 
   let attachment = { public_id: "", url: "" };
   if (req.file) {
@@ -182,34 +215,63 @@ export const replyToSupportTicket = catchAsync(async (req, res) => {
 
   const reply = await SupportMessage.create({
     ticketId: ticket._id,
-    senderId: adminId,
-    senderRole: req.user?.role || "admin",
+    senderId: actorId,
+    senderRole: actorRole,
     message,
     attachment,
   });
 
-  ticket.status = "pending";
+  ticket.status = canManageTickets ? "pending" : "open";
   ticket.lastMessageAt = new Date();
   await ticket.save();
 
-  await SupportNotification.create({
-    userId: ticket.userId,
-    ticketId: ticket._id,
-    type: "support_admin_reply",
-    message: `Support replied to your ticket: ${ticket.subject}`,
-  });
+  if (canManageTickets) {
+    await SupportNotification.create({
+      userId: ticket.userId,
+      ticketId: ticket._id,
+      type: "support_admin_reply",
+      message: `Support replied to your ticket: ${ticket.subject}`,
+    });
 
-  notifyUserSocket(req, ticket.userId.toString(), {
-    type: "support_admin_reply",
-    ticketId: ticket._id,
-    subject: ticket.subject,
-  });
+    notifyUserSocket(req, ticket.userId.toString(), {
+      type: "support_admin_reply",
+      ticketId: ticket._id,
+      subject: ticket.subject,
+    });
 
-  await sendEmail(
-    ticket.email,
-    "Support reply received",
-    buildUserReplyEmail(ticket, reply)
-  );
+    sendEmail(
+      ticket.email,
+      "Support reply received",
+      buildUserReplyEmail(ticket, reply)
+    ).catch(() => null);
+  } else {
+    const supportAdmins = await findSupportAdmins();
+    const adminNotifications = supportAdmins.map((admin) => ({
+      userId: admin._id,
+      ticketId: ticket._id,
+      type: "support_user_reply",
+      message: `User replied to ticket: ${ticket.subject}`,
+    }));
+    if (adminNotifications.length) {
+      await SupportNotification.insertMany(adminNotifications);
+    }
+
+    notifyAdminsSocket(req, {
+      type: "support_user_reply",
+      ticketId: ticket._id,
+      subject: ticket.subject,
+      userId: actorId,
+    });
+
+    const adminEmails = buildAdminEmailRecipients(supportAdmins);
+    adminEmails.forEach((adminEmail) => {
+      sendEmail(
+        adminEmail,
+        "New user reply on support ticket",
+        buildAdminReplyEmail(ticket, reply, actorRole)
+      ).catch(() => null);
+    });
+  }
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -223,11 +285,23 @@ export const replyToSupportTicket = catchAsync(async (req, res) => {
 });
 
 export const getSupportTickets = catchAsync(async (req, res) => {
+  const requesterId = req.user?._id;
+  const requesterRole = req.user?.role?.toString().toLowerCase();
+  const canManageTickets = hasSupportManagerAccess(req.user);
+
+  if (!requesterId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  if (!canManageTickets && requesterRole !== "user") {
+    throw new AppError(httpStatus.FORBIDDEN, "Access denied.");
+  }
+
   const { status, search } = req.query;
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
 
   const filter = {};
+  if (!canManageTickets) {
+    filter.userId = requesterId;
+  }
   if (status) filter.status = status;
   if (search) {
     filter.$or = [
@@ -260,6 +334,15 @@ export const getSupportTickets = catchAsync(async (req, res) => {
 });
 
 export const getSupportTicketDetails = catchAsync(async (req, res) => {
+  const requesterId = req.user?._id;
+  const requesterRole = req.user?.role?.toString().toLowerCase();
+  const canManageTickets = hasSupportManagerAccess(req.user);
+
+  if (!requesterId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  if (!canManageTickets && requesterRole !== "user") {
+    throw new AppError(httpStatus.FORBIDDEN, "Access denied.");
+  }
+
   const { ticketId } = req.params;
   if (!ticketId) {
     throw new AppError(httpStatus.BAD_REQUEST, "ticketId is required");
@@ -267,6 +350,10 @@ export const getSupportTicketDetails = catchAsync(async (req, res) => {
 
   const ticket = await SupportTicket.findById(ticketId).lean();
   if (!ticket) throw new AppError(httpStatus.NOT_FOUND, "Ticket not found");
+
+  if (!canManageTickets && ticket.userId?.toString() !== requesterId.toString()) {
+    throw new AppError(httpStatus.FORBIDDEN, "Access denied.");
+  }
 
   const messages = await SupportMessage.find({ ticketId })
     .sort({ createdAt: 1 })

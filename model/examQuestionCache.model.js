@@ -22,6 +22,14 @@ const examQuestionCacheSchema = new Schema(
     status: { type: Schema.Types.Mixed, default: null },
     statusCode: { type: Schema.Types.Mixed, default: null },
     questions: { type: Schema.Types.Mixed, default: [] },
+    questionHashes: { type: [String], default: [] },
+    servedQuestionHashes: { type: [String], default: [] },
+    questionBankContentHash: { type: String, default: "" },
+    questionSource: {
+      type: String,
+      enum: ["question_bank", "question_service"],
+      default: "question_bank",
+    },
     rawResponse: { type: Schema.Types.Mixed, default: {} },
     progress: {
       answers: { type: Schema.Types.Mixed, default: [] },
@@ -34,6 +42,12 @@ const examQuestionCacheSchema = new Schema(
       answers: { type: Schema.Types.Mixed, default: [] },
       score: { type: Schema.Types.Mixed, default: null },
       submittedAt: { type: Date, default: null },
+    },
+    subscriptionUsage: {
+      cycleStart: { type: Date, default: null },
+      cycleEnd: { type: Date, default: null },
+      questionsGenerated: { type: Number, default: 0, min: 0 },
+      lastGeneratedAt: { type: Date, default: null },
     },
   },
   { timestamps: true }

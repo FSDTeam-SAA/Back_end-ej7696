@@ -156,11 +156,23 @@ const userSchema = new Schema(
       enum: ["starter", "professional"],
       default: "starter",
     },
+    subscriptionStartedAt: {
+      type: Date,
+      default: null,
+    },
+    subscriptionExpiresAt: {
+      type: Date,
+      default: null,
+    },
     verificationInfo: {
       verified: { type: Boolean, default: false },
       token: { type: String, default: "" },
     },
     password_reset_token: { type: String, default: "" },
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
+    },
     fine: { type: Number, default: 0 },
     refreshToken: { type: String, default: "" },
     activeSessionId: { type: String, default: "" },

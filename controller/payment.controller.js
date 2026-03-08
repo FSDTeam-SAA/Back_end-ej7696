@@ -1,4 +1,4 @@
- import httpStatus from "http-status";
+import httpStatus from "http-status";
 import AppError from "../errors/AppError.js";
 import catchAsync from "../utils/catchAsync.js";
 import sendResponse from "../utils/sendResponse.js";
@@ -29,6 +29,7 @@ const DEFAULT_PRO_PLAN_FEATURES = [
   "All smart study tools",
 ];
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
+const PROFESSIONAL_SUBSCRIPTION_MONTHS = 3;
 
 const ZERO_DECIMAL_CURRENCIES = new Set([
   "BIF",
@@ -81,6 +82,31 @@ const getStripeClient = () => {
     );
   }
   return new Stripe(STRIPE_SECRET_KEY);
+};
+
+const addMonths = (date, months) => {
+  const result = new Date(date);
+  result.setMonth(result.getMonth() + months);
+  return result;
+};
+
+const hasActiveProfessionalSubscription = (user, referenceDate = new Date()) => {
+  if (!user) return false;
+  if (user.subscriptionTier?.toString().toLowerCase() !== "professional") {
+    return false;
+  }
+  if (!user.subscriptionExpiresAt) return false;
+  const expiresAt = new Date(user.subscriptionExpiresAt);
+  return expiresAt.getTime() > referenceDate.getTime();
+};
+
+const buildProfessionalSubscriptionWindow = (startDate = new Date()) => {
+  const subscriptionStartedAt = new Date(startDate);
+  const subscriptionExpiresAt = addMonths(
+    subscriptionStartedAt,
+    PROFESSIONAL_SUBSCRIPTION_MONTHS
+  );
+  return { subscriptionStartedAt, subscriptionExpiresAt };
 };
 
 const toStripeAmount = (amount, currency) => {
@@ -258,7 +284,7 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
 
     const user = await User.findById(userId);
     if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
-    if (user.subscriptionTier === "professional") {
+    if (hasActiveProfessionalSubscription(user)) {
       throw new AppError(
         httpStatus.BAD_REQUEST,
         "User already has professional plan"
@@ -267,11 +293,6 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
 
     const exam = await Exam.findById(examId).lean();
     if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
-
-    const existingAccess = await ExamAccess.findOne({ userId, examId });
-    if (existingAccess?.status === "unlocked") {
-      throw new AppError(httpStatus.BAD_REQUEST, "Exam already unlocked");
-    }
 
     const pricing = await getPricing();
     const stripe = getStripeClient();
@@ -368,7 +389,14 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
       { new: true }
     );
 
-    await User.findByIdAndUpdate(userId, { subscriptionTier: "professional" });
+    const { subscriptionStartedAt, subscriptionExpiresAt } =
+      buildProfessionalSubscriptionWindow();
+
+    await User.findByIdAndUpdate(userId, {
+      subscriptionTier: "professional",
+      subscriptionStartedAt,
+      subscriptionExpiresAt,
+    });
 
     sendResponse(res, {
       statusCode: httpStatus.OK,
@@ -378,6 +406,8 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
         unlocked: true,
         access: updatedAccess,
         subscriptionTier: "professional",
+        subscriptionStartedAt,
+        subscriptionExpiresAt,
       },
     });
   }
@@ -552,17 +582,12 @@ export const createProfessionalPlanOrder = catchAsync(async (req, res) => {
 
   const user = await User.findById(userId);
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
-  if (user.subscriptionTier === "professional") {
+  if (hasActiveProfessionalSubscription(user)) {
     throw new AppError(httpStatus.BAD_REQUEST, "User already has professional plan");
   }
 
   const exam = await Exam.findById(examId).lean();
   if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
-
-  const existingAccess = await ExamAccess.findOne({ userId, examId });
-  if (existingAccess?.status === "unlocked") {
-    throw new AppError(httpStatus.BAD_REQUEST, "Exam already unlocked");
-  }
 
   const token = await getPayPalAccessToken();
   const pricing = await getPricing();
@@ -686,7 +711,14 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
     { new: true }
   );
 
-  await User.findByIdAndUpdate(userId, { subscriptionTier: "professional" });
+  const { subscriptionStartedAt, subscriptionExpiresAt } =
+    buildProfessionalSubscriptionWindow();
+
+  await User.findByIdAndUpdate(userId, {
+    subscriptionTier: "professional",
+    subscriptionStartedAt,
+    subscriptionExpiresAt,
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -696,6 +728,8 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
       unlocked: true,
       access: updatedAccess,
       subscriptionTier: "professional",
+      subscriptionStartedAt,
+      subscriptionExpiresAt,
     },
   });
 });
@@ -733,6 +767,49 @@ export const manualUnlockExam = catchAsync(async (req, res) => {
     success: true,
     message: "Exam unlocked manually",
     data: updatedAccess,
+  });
+});
+
+export const manualLockExam = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const examId = req.params.examId;
+  if (!userId || !examId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId and examId are required");
+  }
+
+  const user = await User.findById(userId);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  const exam = await Exam.findById(examId).lean();
+  if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+
+  const existingAccess = await ExamAccess.findOne({ userId, examId, status: "unlocked" });
+  if (!existingAccess) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Exam already locked",
+      data: { locked: true },
+    });
+  }
+
+  if (existingAccess.purchaseType !== "manual") {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Only manually unlocked exams can be locked manually"
+    );
+  }
+
+  existingAccess.status = "free";
+  existingAccess.maxQuestionsPerSession = 2;
+  existingAccess.purchasedAt = null;
+  await existingAccess.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam locked manually",
+    data: existingAccess,
   });
 });
 
