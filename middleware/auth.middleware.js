@@ -3,6 +3,20 @@ import httpStatus from "http-status";
 import AppError from "../errors/AppError.js";
 import { User } from "./../model/user.model.js";
 
+const INSTALLATION_HEADER_KEY = "x-app-installation-id";
+const FALLBACK_INSTALLATION_HEADER_KEY = "x-installation-id";
+
+const normalizeInstallationId = (installationId) =>
+  installationId?.toString().trim() || "";
+
+const resolveRequestInstallationId = (req) =>
+  normalizeInstallationId(
+    req.get(INSTALLATION_HEADER_KEY) ?? req.get(FALLBACK_INSTALLATION_HEADER_KEY)
+  );
+
+const getStoredInstallationId = (user) =>
+  normalizeInstallationId(user?.activeInstallationId);
+
 const normalizeExpiredProfessionalSubscription = async (user) => {
   if (!user) return user;
   const isProfessional =
@@ -25,6 +39,23 @@ const normalizeExpiredProfessionalSubscription = async (user) => {
   return user;
 };
 
+const validateInstallationContext = (req, decoded, user) => {
+  const requestInstallationId = resolveRequestInstallationId(req);
+  const activeInstallationId = getStoredInstallationId(user);
+
+  if (!requestInstallationId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
+  }
+  if (
+    !decoded.iid ||
+    !activeInstallationId ||
+    decoded.iid !== activeInstallationId ||
+    requestInstallationId !== activeInstallationId
+  ) {
+    throw new AppError(401, "Session expired. Please login again.");
+  }
+};
+
 export const protect = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) throw new AppError(httpStatus.NOT_FOUND, "Token not found");
@@ -43,6 +74,7 @@ export const protect = async (req, res, next) => {
       ) {
         throw new AppError(401, "Session expired. Please login again.");
       }
+      validateInstallationContext(req, decoded, user);
       req.user = user;
     } else {
       throw new AppError(401, "Invalid token");
@@ -72,6 +104,7 @@ export const optionalProtect = async (req, res, next) => {
       ) {
         throw new AppError(401, "Session expired. Please login again.");
       }
+      validateInstallationContext(req, decoded, user);
       req.user = user;
     } else {
       throw new AppError(401, "Invalid token");

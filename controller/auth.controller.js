@@ -10,19 +10,31 @@ import { User } from "./../model/user.model.js";
 const createSessionId = () =>
   `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
 
-const normalizeDeviceId = (deviceId) => deviceId?.toString().trim() || "";
+const INSTALLATION_HEADER_KEY = "x-app-installation-id";
+const FALLBACK_INSTALLATION_HEADER_KEY = "x-installation-id";
 
-const clearUserSessionState = (user) => {
-  user.refreshToken = "";
-  user.activeSessionId = "";
-  user.activeDeviceId = "";
+const normalizeInstallationId = (installationId) =>
+  installationId?.toString().trim() || "";
+
+const resolveInstallationId = (req) => {
+  const headerInstallationId =
+    req.get(INSTALLATION_HEADER_KEY) ?? req.get(FALLBACK_INSTALLATION_HEADER_KEY);
+  const bodyInstallationId = req.body?.installationId;
+  return normalizeInstallationId(headerInstallationId || bodyInstallationId);
 };
 
-const buildJwtPayload = (user, sessionId) => ({
+const getStoredInstallationId = (user) => normalizeInstallationId(user?.activeInstallationId);
+
+const setStoredInstallationId = (user, installationId) => {
+  user.activeInstallationId = installationId;
+};
+
+const buildJwtPayload = (user, sessionId, installationId) => ({
   _id: user._id,
   email: user.email,
   role: user.role,
   sid: sessionId,
+  iid: installationId,
 });
 
 const parseRole = (value) => {
@@ -38,7 +50,7 @@ const parseRole = (value) => {
 };
 
 export const register = catchAsync(async (req, res) => {
-  const { phone, name, email, password, confirmPassword, deviceId } = req.body;
+  const { phone, name, email, password, confirmPassword } = req.body;
 
   if (!email || !password) {
     throw new AppError(httpStatus.FORBIDDEN, "Please fill in all fields");
@@ -57,9 +69,9 @@ export const register = catchAsync(async (req, res) => {
       "Email already exists, please try another email"
     );
 
-  const normalizedDeviceId = normalizeDeviceId(deviceId);
-  if (!normalizedDeviceId) {
-    throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
+  const installationId = resolveInstallationId(req);
+  if (!installationId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
   }
 
   const user = await User.create({
@@ -72,7 +84,7 @@ export const register = catchAsync(async (req, res) => {
   });
 
   const sessionId = createSessionId();
-  const jwtPayload = buildJwtPayload(user, sessionId);
+  const jwtPayload = buildJwtPayload(user, sessionId, installationId);
   const accessToken = createToken(
     jwtPayload,
     process.env.JWT_ACCESS_SECRET,
@@ -86,7 +98,7 @@ export const register = catchAsync(async (req, res) => {
   );
   user.refreshToken = refreshToken;
   user.activeSessionId = sessionId;
-  user.activeDeviceId = normalizedDeviceId;
+  setStoredInstallationId(user, installationId);
   await user.save();
   user.accessToken = accessToken;
 
@@ -124,7 +136,7 @@ export const updateUserRole = catchAsync(async (req, res) => {
 });
 
 export const login = catchAsync(async (req, res) => {
-  const { email, password, deviceId } = req.body;
+  const { email, password } = req.body;
   const user = await User.isUserExistsByEmail(email);
   if (!user) {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
@@ -138,40 +150,23 @@ export const login = catchAsync(async (req, res) => {
   if (user.status !== "active") {
     throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
   }
-  const normalizedDeviceId = normalizeDeviceId(deviceId);
-  if (!normalizedDeviceId) {
-    throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
+  const installationId = resolveInstallationId(req);
+  if (!installationId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
   }
 
-  // Enforce one active device per account.
-  // If another device has an active session, block login.
-  if (
-    user.activeDeviceId &&
-    user.activeSessionId &&
-    user.refreshToken &&
-    user.activeDeviceId !== normalizedDeviceId
-  ) {
-    let hasActiveSession = true;
-    try {
-      verifyToken(user.refreshToken, process.env.JWT_REFRESH_SECRET);
-    } catch (_) {
-      hasActiveSession = false;
-    }
-
-    if (hasActiveSession) {
-      return sendResponse(res, {
-        statusCode: httpStatus.CONFLICT,
-        success: false,
-        message: "This account is already logged in on another device",
-        data: {
-          activeDeviceId: user.activeDeviceId,
-          canClearDeviceSession: true,
-        },
-      });
-    }
-
-    // Stale session data from expired refresh token; clear and continue login.
-    clearUserSessionState(user);
+  // Enforce permanent one-installation binding per account.
+  const activeInstallationId = getStoredInstallationId(user);
+  if (activeInstallationId && activeInstallationId !== installationId) {
+    return sendResponse(res, {
+      statusCode: httpStatus.CONFLICT,
+      success: false,
+      message: "This account is already locked to another installation",
+      data: {
+        activeInstallationId,
+        adminResetRequired: true,
+      },
+    });
   }
   if (!(await User.isOTPVerified(user._id))) {
     const otp = generateOTP();
@@ -196,7 +191,7 @@ export const login = catchAsync(async (req, res) => {
     });
   }
   const sessionId = createSessionId();
-  const jwtPayload = buildJwtPayload(user, sessionId);
+  const jwtPayload = buildJwtPayload(user, sessionId, installationId);
   const accessToken = createToken(
     jwtPayload,
     process.env.JWT_ACCESS_SECRET,
@@ -211,7 +206,7 @@ export const login = catchAsync(async (req, res) => {
 
   user.refreshToken = refreshToken;
   user.activeSessionId = sessionId;
-  user.activeDeviceId = normalizedDeviceId;
+  setStoredInstallationId(user, installationId);
   await user.save();
 
   res.cookie("refreshToken", refreshToken, {
@@ -235,48 +230,6 @@ export const login = catchAsync(async (req, res) => {
       _id: user._id,
       mustChangePassword: Boolean(user.mustChangePassword),
       user: userObj,
-    },
-  });
-});
-
-export const clearDeviceSession = catchAsync(async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    throw new AppError(httpStatus.BAD_REQUEST, "Email and password are required");
-  }
-
-  const user = await User.isUserExistsByEmail(email);
-  if (!user) {
-    throw new AppError(httpStatus.NOT_FOUND, "User not found");
-  }
-  if (
-    user?.password &&
-    !(await User.isPasswordMatched(password, user.password))
-  ) {
-    throw new AppError(httpStatus.FORBIDDEN, "Password is not correct");
-  }
-  if (user.status !== "active") {
-    throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
-  }
-
-  const previousDeviceId = user.activeDeviceId || "";
-  clearUserSessionState(user);
-  await user.save();
-
-  res.clearCookie("refreshToken", {
-    secure: true,
-    httpOnly: true,
-    sameSite: "none",
-  });
-
-  sendResponse(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: "Device session cleared successfully",
-    data: {
-      clearedDeviceId: previousDeviceId,
-      canLoginAnotherDevice: true,
     },
   });
 });
@@ -424,14 +377,14 @@ export const changePassword = catchAsync(async (req, res) => {
 
 
 export const refreshToken = catchAsync(async (req, res) => {
-  const { refreshToken, deviceId } = req.body;
+  const { refreshToken } = req.body;
 
   if (!refreshToken) {
     throw new AppError(400, "Refresh token is required");
   }
-  const normalizedDeviceId = normalizeDeviceId(deviceId);
-  if (!normalizedDeviceId) {
-    throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
+  const installationId = resolveInstallationId(req);
+  if (!installationId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
   }
 
   const decoded = verifyToken(refreshToken, process.env.JWT_REFRESH_SECRET);
@@ -442,13 +395,17 @@ export const refreshToken = catchAsync(async (req, res) => {
   if (!decoded.sid || !user.activeSessionId || decoded.sid !== user.activeSessionId) {
     throw new AppError(401, "Session expired. Please login again.");
   }
-  if (!user.activeDeviceId || user.activeDeviceId !== normalizedDeviceId) {
+  if (!decoded.iid || decoded.iid !== installationId) {
+    throw new AppError(401, "Session expired. Please login again.");
+  }
+  const activeInstallationId = getStoredInstallationId(user);
+  if (!activeInstallationId || activeInstallationId !== installationId) {
     throw new AppError(401, "Session expired. Please login again.");
   }
   if (user.status !== "active") {
     throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
   }
-  const jwtPayload = buildJwtPayload(user, user.activeSessionId);
+  const jwtPayload = buildJwtPayload(user, user.activeSessionId, installationId);
 
   const accessToken = createToken(
     jwtPayload,
@@ -473,10 +430,13 @@ export const refreshToken = catchAsync(async (req, res) => {
 });
 
 export const logout = catchAsync(async (req, res) => {
-  const user = req.user?._id;
+  const userId = req.user?._id;
   await User.findByIdAndUpdate(
-    user,
-    { refreshToken: "", activeSessionId: "", activeDeviceId: "" },
+    userId,
+    {
+      refreshToken: "",
+      activeSessionId: "",
+    },
     { new: true }
   );
   res.clearCookie("refreshToken", {
