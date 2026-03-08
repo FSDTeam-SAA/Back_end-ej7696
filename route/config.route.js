@@ -1,7 +1,38 @@
 import express from "express";
-import { protect } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
+
+router.get("/model-name", async (req, res) => {
+  const serviceUrl = process.env.GETAIMODEL_SERVICE_URL;
+  if (!serviceUrl) {
+    return res.status(500).json({
+      status: false,
+      status_code: 500,
+      text: "GETAIMODEL_SERVICE_URL is not configured",
+    });
+  }
+
+  console.log("[config.route] Forwarding to GETAIMODEL_SERVICE_URL", {
+    url: serviceUrl,
+    method: "GET",
+  });
+
+  try {
+    const upstream = await fetch(serviceUrl, {
+      method: "GET",
+    });
+
+    const payload = await upstream.json();
+    return res.status(upstream.status).json(payload);
+  } catch (error) {
+    console.error("[config.route] GETAIMODEL_SERVICE_URL error:", error);
+    return res.status(502).json({
+      status: false,
+      status_code: 502,
+      text: "Failed to get AI model name",
+    });
+  }
+});
 
 router.post("/config-model", async (req, res) => {
   const serviceUrl = process.env.CONFIG_SERVICE_URL;

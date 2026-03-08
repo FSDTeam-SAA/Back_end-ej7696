@@ -13,6 +13,7 @@ import { sendEmail } from "../utils/sendEmail.js";
 
 const safeUserSelect =
   "-password -refreshToken -verificationInfo -password_reset_token";
+const PROFESSIONAL_SUBSCRIPTION_MONTHS = 3;
 
 const SUB_ADMIN_PERMISSIONS = [
   "view_user_list",
@@ -89,6 +90,12 @@ const parseIfJson = (value, fieldName) => {
       `Invalid JSON for ${fieldName}`
     );
   }
+};
+
+const addMonths = (date, months) => {
+  const result = new Date(date);
+  result.setMonth(result.getMonth() + months);
+  return result;
 };
 
 export const getProfile = catchAsync(async (req, res) => {
@@ -436,6 +443,18 @@ export const updateUserSubscription = catchAsync(async (req, res) => {
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   user.subscriptionTier = tier;
+  if (tier === "professional") {
+    const subscriptionStartedAt = new Date();
+    const subscriptionExpiresAt = addMonths(
+      subscriptionStartedAt,
+      PROFESSIONAL_SUBSCRIPTION_MONTHS
+    );
+    user.subscriptionStartedAt = subscriptionStartedAt;
+    user.subscriptionExpiresAt = subscriptionExpiresAt;
+  } else {
+    user.subscriptionStartedAt = null;
+    user.subscriptionExpiresAt = null;
+  }
   await user.save();
 
   const sanitizedUser = await User.findById(req.params.id).select(safeUserSelect);
@@ -517,6 +536,7 @@ export const adminSetTemporaryPassword = catchAsync(async (req, res) => {
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   user.password = password;
+  user.mustChangePassword = true;
   await user.save();
 
   const sanitizedUser = await User.findById(req.params.id).select(safeUserSelect);
@@ -533,6 +553,23 @@ export const updateProfile = catchAsync(async (req, res) => {
   const user = await User.findById(req.user._id);
 
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  if (req.body.email !== undefined) {
+    const nextEmail = req.body.email?.toString().trim();
+    if (!nextEmail) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Email is required");
+    }
+    if (nextEmail !== user.email) {
+      const existingUser = await User.findOne({ email: nextEmail });
+      if (existingUser && existingUser._id.toString() !== user._id.toString()) {
+        throw new AppError(
+          httpStatus.BAD_REQUEST,
+          "Email already exists, please try another email"
+        );
+      }
+      user.email = nextEmail;
+    }
+  }
 
   const editableFields = [
     "firstName",
@@ -602,9 +639,11 @@ export const updateProfile = catchAsync(async (req, res) => {
 });
 
 export const changePassword = catchAsync(async (req, res) => {
-  const { currentPassword, newPassword, confirmPassword } = req.body;
+  const currentPassword = req.body?.currentPassword ?? req.body?.oldPassword;
+  const newPassword = req.body?.newPassword;
+  const confirmPassword = req.body?.confirmPassword;
 
-  if (newPassword !== confirmPassword)
+  if (confirmPassword !== undefined && newPassword !== confirmPassword)
     throw new AppError(httpStatus.BAD_REQUEST, "Passwords don't match");
 
   const user = await User.findById(req.user._id).select("+password");
@@ -613,6 +652,7 @@ export const changePassword = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.UNAUTHORIZED, "Current password wrong");
   }
   user.password = newPassword;
+  user.mustChangePassword = false;
 
   await user.save();
 

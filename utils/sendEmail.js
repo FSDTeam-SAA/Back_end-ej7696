@@ -1,16 +1,16 @@
 import nodemailer from 'nodemailer';
 export const sendEmail = async (to,subject, html) => {
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,
+    host: process.env.SMTP_HOST || 'smtp.hostinger.com',
+    port: Number(process.env.SMTP_PORT || 465),
+    secure: String(process.env.SMTP_SECURE || 'true').toLowerCase() === 'true',
     auth: {
-      user: process.env.APP_USER || 'tahsin.bdcalling@gmail.com',
-      pass: process.env.APP_PASS || 'lcnt cxiw pcui vikv',
+      user: process.env.APP_USER || 'contact@inspectorspath.com',
+      pass: process.env.APP_PASS || 'Is2@Qx1J[',
     },
   });
   await transporter.sendMail({
-    from: process.env.APP_USER || 'tahsin.bdcalling@gmail.com', // sender address
+    from: process.env.APP_USER || 'contact@inspectorspath.com', // sender address
     to,
     subject: subject? subject:  'Password change Link : change it by 10 minutes', 
     html,
