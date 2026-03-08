@@ -14,6 +14,11 @@ import { sendEmail } from "../utils/sendEmail.js";
 const safeUserSelect =
   "-password -refreshToken -verificationInfo -password_reset_token";
 const PROFESSIONAL_SUBSCRIPTION_MONTHS = 3;
+const SESSION_CLEAR_UPDATE = {
+  refreshToken: "",
+  activeSessionId: "",
+  activeDeviceId: "",
+};
 
 const SUB_ADMIN_PERMISSIONS = [
   "view_user_list",
@@ -98,6 +103,12 @@ const addMonths = (date, months) => {
   return result;
 };
 
+const buildDeviceSessionData = (user) => ({
+  userId: user._id,
+  activeDeviceId: user.activeDeviceId || "",
+  hasActiveDevice: Boolean(user.activeDeviceId),
+});
+
 export const getProfile = catchAsync(async (req, res) => {
   const user = await User.findById(req.user._id).select(safeUserSelect);
   sendResponse(res, {
@@ -105,6 +116,38 @@ export const getProfile = catchAsync(async (req, res) => {
     success: true,
     message: "Profile fetched",
     data: user,
+  });
+});
+
+export const getMyDeviceSession = catchAsync(async (req, res) => {
+  const user = await User.findById(req.user._id).select("activeDeviceId");
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Device session fetched",
+    data: buildDeviceSessionData(user),
+  });
+});
+
+export const clearMyDeviceSession = catchAsync(async (req, res) => {
+  const user = await User.findByIdAndUpdate(req.user._id, SESSION_CLEAR_UPDATE, {
+    new: true,
+  }).select("activeDeviceId");
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  res.clearCookie("refreshToken", {
+    secure: true,
+    httpOnly: true,
+    sameSite: "none",
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Device session cleared successfully",
+    data: buildDeviceSessionData(user),
   });
 });
 
@@ -354,6 +397,32 @@ export const getUserDetails = catchAsync(async (req, res) => {
       avgScore,
       avgScoreByExam,
     },
+  });
+});
+
+export const getUserDeviceSession = catchAsync(async (req, res) => {
+  const user = await User.findById(req.params.id).select("activeDeviceId");
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "User device session fetched",
+    data: buildDeviceSessionData(user),
+  });
+});
+
+export const clearUserDeviceSession = catchAsync(async (req, res) => {
+  const user = await User.findByIdAndUpdate(req.params.id, SESSION_CLEAR_UPDATE, {
+    new: true,
+  }).select("activeDeviceId");
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "User device session cleared successfully",
+    data: buildDeviceSessionData(user),
   });
 });
 

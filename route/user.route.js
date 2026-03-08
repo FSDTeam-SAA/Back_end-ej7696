@@ -10,8 +10,12 @@ import {
   updateUserSubscription,
   adminSendPasswordResetEmail,
   adminSetTemporaryPassword,
+  clearMyDeviceSession,
+  clearUserDeviceSession,
   getUserExamReviews,
+  getMyDeviceSession,
   updateProfile,
+  getUserDeviceSession,
 } from "../controller/user.controller.js";
 
 import { isAdmin, protect, requirePermission } from "../middleware/auth.middleware.js";
@@ -20,9 +24,13 @@ const router = express.Router();
 
 router.get("/", protect, requirePermission("view_user_list"), getUsers);
 router.get("/profile", protect, getProfile);
+router.get("/profile/device-session", protect, getMyDeviceSession);
 router.put("/profile", protect, upload.single("avatar"), updateProfile);
+router.delete("/profile/device-session", protect, clearMyDeviceSession);
 router.put("/password", protect, changePassword);
+router.get("/:id/device-session", protect, requirePermission("view_user_list"), getUserDeviceSession);
 router.get("/:id", protect, requirePermission("view_user_list"), getUserDetails);
+router.delete("/:id/device-session", protect, requirePermission("credential_management"), clearUserDeviceSession);
 router.patch("/:id/status", protect, requirePermission("suspend_users"), updateUserStatus);
 router.patch("/:id/subscription", protect, requirePermission("manage_subscription"), updateUserSubscription);
 router.patch("/:id/permissions", protect, isAdmin, updateSubAdminPermissions);

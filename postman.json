@@ -7,6 +7,7 @@
   "variable": [
     { "key": "base_url", "value": "http://localhost:5000" },
     { "key": "token", "value": "" },
+    { "key": "refreshToken", "value": "" },
     { "key": "admin_token", "value": "" },
     { "key": "examId", "value": "" },
     { "key": "attemptId", "value": "" },
@@ -26,7 +27,7 @@
             "url": "{{base_url}}/api/v1/auth/register",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"secret\",\n  \"name\": \"Test User\"\n}",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"secret\",\n  \"name\": \"Test User\",\n  \"confirmPassword\": \"secret\",\n  \"deviceId\": \"web-chrome-001\"\n}",
               "options": { "raw": { "language": "json" } }
             }
           }
@@ -38,7 +39,7 @@
             "url": "{{base_url}}/api/v1/auth/login",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"secret\"\n}",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"secret\",\n  \"deviceId\": \"web-chrome-001\"\n}",
               "options": { "raw": { "language": "json" } }
             }
           }
@@ -97,7 +98,23 @@
           "request": {
             "method": "POST",
             "url": "{{base_url}}/api/v1/auth/refresh-token",
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\",\n  \"deviceId\": \"web-chrome-001\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Clear Device Session",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/device-session/clear",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"secret\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
           }
         },
         {
@@ -135,6 +152,14 @@
           }
         },
         {
+          "name": "Get My Device Session",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/user/profile/device-session",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        },
+        {
           "name": "Update Profile",
           "request": {
             "method": "PUT",
@@ -163,6 +188,14 @@
           }
         },
         {
+          "name": "Clear My Device Session",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/user/profile/device-session",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }]
+          }
+        },
+        {
           "name": "Admin - List Users",
           "request": {
             "method": "GET",
@@ -175,6 +208,14 @@
           "request": {
             "method": "GET",
             "url": "{{base_url}}/api/v1/user/{{userId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Admin - Get User Device Session",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/user/{{userId}}/device-session",
             "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
           }
         },
@@ -239,6 +280,14 @@
           "request": {
             "method": "DELETE",
             "url": "{{base_url}}/api/v1/user/{{userId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
+          }
+        },
+        {
+          "name": "Admin - Clear User Device Session",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/user/{{userId}}/device-session",
             "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" }]
           }
         }
