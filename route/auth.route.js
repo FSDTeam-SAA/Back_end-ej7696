@@ -1,6 +1,5 @@
 import express from "express";
 import {
-  clearDeviceSession,
   changePassword,
   forgetPassword,
   login,
@@ -20,7 +19,6 @@ router.post("/login", login);
 router.post("/verify", verifyEmail);
 router.post("/forget", forgetPassword);
 router.post("/reset-password", resetPassword);
-router.post("/device-session/clear", clearDeviceSession);
 router.post("/change-password", protect, changePassword);
 router.post("/refresh-token", refreshToken);
 router.post("/logout", protect, logout);

@@ -10,12 +10,11 @@ import {
   updateUserSubscription,
   adminSendPasswordResetEmail,
   adminSetTemporaryPassword,
-  clearMyDeviceSession,
-  clearUserDeviceSession,
+  clearUserInstallationSession,
   getUserExamReviews,
-  getMyDeviceSession,
+  getMyInstallationSession,
   updateProfile,
-  getUserDeviceSession,
+  getUserInstallationSession,
 } from "../controller/user.controller.js";
 
 import { isAdmin, protect, requirePermission } from "../middleware/auth.middleware.js";
@@ -24,13 +23,22 @@ const router = express.Router();
 
 router.get("/", protect, requirePermission("view_user_list"), getUsers);
 router.get("/profile", protect, getProfile);
-router.get("/profile/device-session", protect, getMyDeviceSession);
+router.get("/profile/installation-session", protect, getMyInstallationSession);
 router.put("/profile", protect, upload.single("avatar"), updateProfile);
-router.delete("/profile/device-session", protect, clearMyDeviceSession);
 router.put("/password", protect, changePassword);
-router.get("/:id/device-session", protect, requirePermission("view_user_list"), getUserDeviceSession);
+router.get(
+  "/:id/installation-session",
+  protect,
+  requirePermission("view_user_list"),
+  getUserInstallationSession
+);
 router.get("/:id", protect, requirePermission("view_user_list"), getUserDetails);
-router.delete("/:id/device-session", protect, requirePermission("credential_management"), clearUserDeviceSession);
+router.delete(
+  "/:id/installation-session",
+  protect,
+  isAdmin,
+  clearUserInstallationSession
+);
 router.patch("/:id/status", protect, requirePermission("suspend_users"), updateUserStatus);
 router.patch("/:id/subscription", protect, requirePermission("manage_subscription"), updateUserSubscription);
 router.patch("/:id/permissions", protect, isAdmin, updateSubAdminPermissions);

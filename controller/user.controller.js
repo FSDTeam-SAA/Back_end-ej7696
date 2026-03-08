@@ -17,7 +17,7 @@ const PROFESSIONAL_SUBSCRIPTION_MONTHS = 3;
 const SESSION_CLEAR_UPDATE = {
   refreshToken: "",
   activeSessionId: "",
-  activeDeviceId: "",
+  activeInstallationId: "",
 };
 
 const SUB_ADMIN_PERMISSIONS = [
@@ -103,10 +103,10 @@ const addMonths = (date, months) => {
   return result;
 };
 
-const buildDeviceSessionData = (user) => ({
+const buildInstallationSessionData = (user) => ({
   userId: user._id,
-  activeDeviceId: user.activeDeviceId || "",
-  hasActiveDevice: Boolean(user.activeDeviceId),
+  activeInstallationId: user.activeInstallationId || "",
+  hasActiveInstallation: Boolean(user.activeInstallationId),
 });
 
 export const getProfile = catchAsync(async (req, res) => {
@@ -119,35 +119,15 @@ export const getProfile = catchAsync(async (req, res) => {
   });
 });
 
-export const getMyDeviceSession = catchAsync(async (req, res) => {
-  const user = await User.findById(req.user._id).select("activeDeviceId");
+export const getMyInstallationSession = catchAsync(async (req, res) => {
+  const user = await User.findById(req.user._id).select("activeInstallationId");
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "Device session fetched",
-    data: buildDeviceSessionData(user),
-  });
-});
-
-export const clearMyDeviceSession = catchAsync(async (req, res) => {
-  const user = await User.findByIdAndUpdate(req.user._id, SESSION_CLEAR_UPDATE, {
-    new: true,
-  }).select("activeDeviceId");
-  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
-
-  res.clearCookie("refreshToken", {
-    secure: true,
-    httpOnly: true,
-    sameSite: "none",
-  });
-
-  sendResponse(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: "Device session cleared successfully",
-    data: buildDeviceSessionData(user),
+    message: "Installation session fetched",
+    data: buildInstallationSessionData(user),
   });
 });
 
@@ -400,29 +380,29 @@ export const getUserDetails = catchAsync(async (req, res) => {
   });
 });
 
-export const getUserDeviceSession = catchAsync(async (req, res) => {
-  const user = await User.findById(req.params.id).select("activeDeviceId");
+export const getUserInstallationSession = catchAsync(async (req, res) => {
+  const user = await User.findById(req.params.id).select("activeInstallationId");
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "User device session fetched",
-    data: buildDeviceSessionData(user),
+    message: "User installation session fetched",
+    data: buildInstallationSessionData(user),
   });
 });
 
-export const clearUserDeviceSession = catchAsync(async (req, res) => {
+export const clearUserInstallationSession = catchAsync(async (req, res) => {
   const user = await User.findByIdAndUpdate(req.params.id, SESSION_CLEAR_UPDATE, {
     new: true,
-  }).select("activeDeviceId");
+  }).select("activeInstallationId");
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "User device session cleared successfully",
-    data: buildDeviceSessionData(user),
+    message: "User installation session cleared successfully",
+    data: buildInstallationSessionData(user),
   });
 });
 
