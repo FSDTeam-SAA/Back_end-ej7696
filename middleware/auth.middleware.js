@@ -9,16 +9,25 @@ export const protect = async (req, res, next) => {
 
   try {
     const decoded = await jwt.verify(token, process.env.JWT_ACCESS_SECRET);
-    // console.log(decoded)
     const user = await User.findById(decoded._id);
     if (user && (await User.isOTPVerified(user._id))) {
       if (user.status !== "active") {
         throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
       }
+      if (
+        !decoded.sid ||
+        !user.activeSessionId ||
+        decoded.sid !== user.activeSessionId
+      ) {
+        throw new AppError(401, "Session expired. Please login again.");
+      }
       req.user = user;
+    } else {
+      throw new AppError(401, "Invalid token");
     }
     next();
   } catch (err) {
+    if (err instanceof AppError) throw err;
     throw new AppError(401, "Invalid token");
   }
 };
@@ -34,10 +43,20 @@ export const optionalProtect = async (req, res, next) => {
       if (user.status !== "active") {
         throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
       }
+      if (
+        !decoded.sid ||
+        !user.activeSessionId ||
+        decoded.sid !== user.activeSessionId
+      ) {
+        throw new AppError(401, "Session expired. Please login again.");
+      }
       req.user = user;
+    } else {
+      throw new AppError(401, "Invalid token");
     }
     return next();
   } catch (err) {
+    if (err instanceof AppError) throw err;
     throw new AppError(401, "Invalid token");
   }
 };
