@@ -7,6 +7,16 @@ import sendResponse from "../utils/sendResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { User } from "./../model/user.model.js";
 
+const createSessionId = () =>
+  `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+
+const buildJwtPayload = (user, sessionId) => ({
+  _id: user._id,
+  email: user.email,
+  role: user.role,
+  sid: sessionId,
+});
+
 const parseRole = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
   const normalized = value.toString().toLowerCase();
@@ -20,7 +30,7 @@ const parseRole = (value) => {
 };
 
 export const register = catchAsync(async (req, res) => {
-  const { phone, name, email, password, confirmPassword } = req.body;
+  const { phone, name, email, password, confirmPassword, deviceId } = req.body;
 
   if (!email || !password) {
     throw new AppError(httpStatus.FORBIDDEN, "Please fill in all fields");
@@ -39,6 +49,10 @@ export const register = catchAsync(async (req, res) => {
       "Email already exists, please try another email"
     );
 
+  if (!deviceId || !deviceId.toString().trim()) {
+    throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
+  }
+
   const user = await User.create({
     phone,
     name,
@@ -48,11 +62,8 @@ export const register = catchAsync(async (req, res) => {
     verificationInfo: { token: "", verified: true },
   });
 
-  const jwtPayload = {
-    _id: user._id,
-    email: user.email,
-    role: user.role,
-  };
+  const sessionId = createSessionId();
+  const jwtPayload = buildJwtPayload(user, sessionId);
   const accessToken = createToken(
     jwtPayload,
     process.env.JWT_ACCESS_SECRET,
@@ -65,6 +76,8 @@ export const register = catchAsync(async (req, res) => {
     process.env.JWT_REFRESH_EXPIRES_IN
   );
   user.refreshToken = refreshToken;
+  user.activeSessionId = sessionId;
+  user.activeDeviceId = deviceId.toString().trim();
   await user.save();
   user.accessToken = accessToken;
 
@@ -102,7 +115,7 @@ export const updateUserRole = catchAsync(async (req, res) => {
 });
 
 export const login = catchAsync(async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, deviceId } = req.body;
   const user = await User.isUserExistsByEmail(email);
   if (!user) {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
@@ -115,6 +128,38 @@ export const login = catchAsync(async (req, res) => {
   }
   if (user.status !== "active") {
     throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
+  }
+  if (!deviceId || !deviceId.toString().trim()) {
+    throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
+  }
+  const normalizedDeviceId = deviceId.toString().trim();
+
+  // Enforce one active device per account.
+  // If another device has an active session, block login.
+  if (
+    user.activeDeviceId &&
+    user.activeSessionId &&
+    user.refreshToken &&
+    user.activeDeviceId !== normalizedDeviceId
+  ) {
+    let hasActiveSession = true;
+    try {
+      verifyToken(user.refreshToken, process.env.JWT_REFRESH_SECRET);
+    } catch (_) {
+      hasActiveSession = false;
+    }
+
+    if (hasActiveSession) {
+      throw new AppError(
+        httpStatus.CONFLICT,
+        "This account is already logged in on another device"
+      );
+    }
+
+    // Stale session data from expired refresh token; clear and continue login.
+    user.activeSessionId = "";
+    user.activeDeviceId = "";
+    user.refreshToken = "";
   }
   if (!(await User.isOTPVerified(user._id))) {
     const otp = generateOTP();
@@ -138,11 +183,8 @@ export const login = catchAsync(async (req, res) => {
       data: { email: user.email },
     });
   }
-  const jwtPayload = {
-    _id: user._id,
-    email: user.email,
-    role: user.role,
-  };
+  const sessionId = createSessionId();
+  const jwtPayload = buildJwtPayload(user, sessionId);
   const accessToken = createToken(
     jwtPayload,
     process.env.JWT_ACCESS_SECRET,
@@ -156,7 +198,9 @@ export const login = catchAsync(async (req, res) => {
   );
 
   user.refreshToken = refreshToken;
-  let _user = await user.save();
+  user.activeSessionId = sessionId;
+  user.activeDeviceId = normalizedDeviceId;
+  await user.save();
 
   res.cookie("refreshToken", refreshToken, {
     secure: true,
@@ -315,10 +359,13 @@ export const changePassword = catchAsync(async (req, res) => {
 
 
 export const refreshToken = catchAsync(async (req, res) => {
-  const { refreshToken } = req.body;
+  const { refreshToken, deviceId } = req.body;
 
   if (!refreshToken) {
     throw new AppError(400, "Refresh token is required");
+  }
+  if (!deviceId || !deviceId.toString().trim()) {
+    throw new AppError(httpStatus.BAD_REQUEST, "deviceId is required");
   }
 
   const decoded = verifyToken(refreshToken, process.env.JWT_REFRESH_SECRET);
@@ -326,14 +373,16 @@ export const refreshToken = catchAsync(async (req, res) => {
   if (!user || user.refreshToken !== refreshToken) {
     throw new AppError(401, "Invalid refresh token");
   }
+  if (!decoded.sid || !user.activeSessionId || decoded.sid !== user.activeSessionId) {
+    throw new AppError(401, "Session expired. Please login again.");
+  }
+  if (!user.activeDeviceId || user.activeDeviceId !== deviceId.toString().trim()) {
+    throw new AppError(401, "Session expired. Please login again.");
+  }
   if (user.status !== "active") {
     throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
   }
-  const jwtPayload = {
-    _id: user._id,
-    email: user.email,
-    role: user.role,
-  };
+  const jwtPayload = buildJwtPayload(user, user.activeSessionId);
 
   const accessToken = createToken(
     jwtPayload,
@@ -359,9 +408,9 @@ export const refreshToken = catchAsync(async (req, res) => {
 
 export const logout = catchAsync(async (req, res) => {
   const user = req.user?._id;
-  const user1 = await User.findByIdAndUpdate(
+  await User.findByIdAndUpdate(
     user,
-    { refreshToken: "" },
+    { refreshToken: "", activeSessionId: "", activeDeviceId: "" },
     { new: true }
   );
   sendResponse(res, {

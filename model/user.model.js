@@ -163,6 +163,8 @@ const userSchema = new Schema(
     password_reset_token: { type: String, default: "" },
     fine: { type: Number, default: 0 },
     refreshToken: { type: String, default: "" },
+    activeSessionId: { type: String, default: "" },
+    activeDeviceId: { type: String, default: "" },
     review: [
       {
         rating: {
