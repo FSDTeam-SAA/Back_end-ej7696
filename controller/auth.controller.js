@@ -29,6 +29,9 @@ const setStoredInstallationId = (user, installationId) => {
   user.activeInstallationId = installationId;
 };
 
+const isInstallationLockBypassRole = (user) =>
+  user?.role?.toString().toLowerCase() === "admin";
+
 const buildJwtPayload = (user, sessionId, installationId) => ({
   _id: user._id,
   email: user.email,
@@ -155,9 +158,13 @@ export const login = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
   }
 
-  // Enforce permanent one-installation binding per account.
+  // Admins can rotate their active installation by logging in again.
   const activeInstallationId = getStoredInstallationId(user);
-  if (activeInstallationId && activeInstallationId !== installationId) {
+  if (
+    !isInstallationLockBypassRole(user) &&
+    activeInstallationId &&
+    activeInstallationId !== installationId
+  ) {
     return sendResponse(res, {
       statusCode: httpStatus.CONFLICT,
       success: false,
