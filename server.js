@@ -24,8 +24,9 @@ export const io = new Server(server, {
 app.set("io", io);
 
 const allowedOrigins = [
-  "http://187.77.10.158:3000",
   "http://localhost:3000",
+  "http://10.10.5.49:3000",
+  "http://10.10.5.49",
 ];
 
 app.use(
@@ -39,7 +40,12 @@ app.use(
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-app-installation-id",
+      "x-installation-id",
+    ],
   })
 );
 
