@@ -9,7 +9,8 @@
     "dev": "nodemon -L server.js",
     "staging": "env-cmd -f .env.staging node server.js",
     "prod": "env-cmd -f .env.production node server.js",
-    "beta": "env-cmd -f .env.beta node server.js"
+    "beta": "env-cmd -f .env.beta node server.js",
+    "migrate:referral-codes": "node scripts/backfillReferralCodes.js"
   },
   "author": "",
   "license": "ISC",

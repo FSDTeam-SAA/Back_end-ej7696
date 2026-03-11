@@ -1,0 +1,1100 @@
+import httpStatus from "http-status";
+import Stripe from "stripe";
+import AppError from "../errors/AppError.js";
+import catchAsync from "../utils/catchAsync.js";
+import sendResponse from "../utils/sendResponse.js";
+import { User } from "../model/user.model.js";
+import { ResourceCategory } from "../model/resourceCategory.model.js";
+import { ResourceProduct } from "../model/resourceProduct.model.js";
+import { ResourcePurchase } from "../model/resourcePurchase.model.js";
+import {
+  applyResourceUnlocksToUser,
+  getResourceProductOrThrow,
+  getUnlockedResourceCodeSet,
+  getUpgradeAddOnOptions,
+  isResourceUnlockedForUser,
+  normalizeProductCode,
+  resolveResourceRevenueTag,
+  roundCurrency,
+} from "../utils/resource.service.js";
+import { uploadOnCloudinary } from "../utils/commonMethod.js";
+
+const PAYPAL_BASE_URL =
+  process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com";
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID || "";
+const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET || "";
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
+
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "BIF",
+  "CLP",
+  "DJF",
+  "GNF",
+  "JPY",
+  "KMF",
+  "KRW",
+  "MGA",
+  "PYG",
+  "RWF",
+  "UGX",
+  "VND",
+  "VUV",
+  "XAF",
+  "XOF",
+  "XPF",
+]);
+
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  const normalized = value.toString().trim().toLowerCase();
+  if (["true", "1", "yes"].includes(normalized)) return true;
+  if (["false", "0", "no"].includes(normalized)) return false;
+  return fallback;
+};
+
+const parseBundleIncludes = (value) => {
+  if (value === undefined || value === null || value === "") return [];
+
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeProductCode(item)).filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => normalizeProductCode(item)).filter(Boolean);
+      }
+    } catch (_err) {
+      // Fallback to comma-separated values
+    }
+
+    return trimmed
+      .split(",")
+      .map((item) => normalizeProductCode(item))
+      .filter(Boolean);
+  }
+
+  return [];
+};
+
+const getUploadedFile = (req, fieldName) => {
+  const files = req.files;
+  if (!files || Array.isArray(files)) return null;
+  const list = files[fieldName];
+  if (!Array.isArray(list) || !list.length) return null;
+  return list[0];
+};
+
+const uploadResourceProductAssets = async (req) => {
+  const result = {
+    coverImageUrl: "",
+    contentUrl: "",
+  };
+
+  const coverImageFile = getUploadedFile(req, "coverImage");
+  if (coverImageFile?.buffer) {
+    const upload = await uploadOnCloudinary(coverImageFile.buffer, {
+      folder: "ej7696/resources/cover-images",
+      resource_type: "image",
+    });
+    result.coverImageUrl = upload?.secure_url || "";
+  }
+
+  const contentFile = getUploadedFile(req, "contentFile");
+  if (contentFile?.buffer) {
+    const upload = await uploadOnCloudinary(contentFile.buffer, {
+      folder: "ej7696/resources/content-files",
+      resource_type: "raw",
+    });
+    result.contentUrl = upload?.secure_url || "";
+  }
+
+  return result;
+};
+
+const toStripeAmount = (amount, currency) => {
+  const normalized = currency?.toString().trim().toUpperCase() || "USD";
+  if (ZERO_DECIMAL_CURRENCIES.has(normalized)) {
+    return Math.round(amount);
+  }
+  return Math.round(amount * 100);
+};
+
+const getStripeClient = () => {
+  if (!STRIPE_SECRET_KEY) {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      "Stripe credentials not configured"
+    );
+  }
+  return new Stripe(STRIPE_SECRET_KEY);
+};
+
+const getPayPalAccessToken = async () => {
+  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      "PayPal credentials not configured"
+    );
+  }
+
+  const credentials = Buffer.from(
+    `${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`
+  ).toString("base64");
+
+  const res = await fetch(`${PAYPAL_BASE_URL}/v1/oauth2/token`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${credentials}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data?.access_token) {
+    throw new AppError(httpStatus.BAD_GATEWAY, "Failed to authenticate with PayPal");
+  }
+
+  return data.access_token;
+};
+
+const buildPaymentAccountFingerprintFromStripeIntent = (paymentIntent) => {
+  const token = paymentIntent?.payment_method || paymentIntent?.customer || paymentIntent?.id;
+  return token ? `stripe:${token}` : "";
+};
+
+const buildPaymentAccountFingerprintFromPayPalCapture = (captureData) => {
+  const payerId = captureData?.payer?.payer_id;
+  const payerEmail = captureData?.payer?.email_address;
+  const fallback =
+    captureData?.payment_source?.paypal?.account_id ||
+    captureData?.payment_source?.paypal?.email_address;
+  const token = payerId || payerEmail || fallback || "";
+  return token ? `paypal:${token}` : "";
+};
+
+const getPurchaseType = (product) => (product?.isBundle ? "bundle" : "single");
+
+const getPriceForProduct = (product) => {
+  const finalPrice = roundCurrency(product?.price || 0);
+  const basePrice = roundCurrency(product?.originalPrice ?? product?.price ?? 0);
+  const discountAmount = roundCurrency(Math.max(basePrice - finalPrice, 0));
+
+  return {
+    basePrice,
+    finalPrice,
+    discountAmount,
+  };
+};
+
+const buildProductCard = ({ product, unlockedCodes }) => {
+  const code = normalizeProductCode(product?.code);
+  const isUnlocked = unlockedCodes.has(code);
+
+  return {
+    id: product._id,
+    categoryId: product.categoryId,
+    code,
+    title: product.title,
+    shortDescription: product.shortDescription,
+    fullDescription: product.fullDescription,
+    coverImageUrl: product.coverImageUrl,
+    contentUrl: isUnlocked ? product.contentUrl : "",
+    previewAvailable: Boolean(product.previewAvailable),
+    previewTitle: product.previewTitle,
+    previewContent: product.previewAvailable ? product.previewContent : "",
+    previewUrl: product.previewAvailable ? product.previewUrl : "",
+    pricing: {
+      current: product.price,
+      original: product.originalPrice ?? product.price,
+      upgradeDiscount: product.upgradeDiscountPrice ?? product.price,
+      currency: product.currency || "USD",
+    },
+    isBundle: Boolean(product.isBundle),
+    bundleIncludes: product.bundleIncludes || [],
+    locked: !isUnlocked,
+    unlocked: isUnlocked,
+    purchaseState: isUnlocked ? "purchased" : "locked",
+    sortOrder: product.sortOrder || 0,
+  };
+};
+
+const getUserResourceAccess = (user) => ({
+  has_api510_inspection_guide: Boolean(user?.has_api510_inspection_guide),
+  has_api510_report_guide: Boolean(user?.has_api510_report_guide),
+  has_api510_bundle: Boolean(user?.has_api510_bundle),
+  resourceUnlocks: user?.resourceUnlocks || [],
+});
+
+const fetchResourceStorePayload = async (userId) => {
+  const [categories, products, user] = await Promise.all([
+    ResourceCategory.find({ isActive: true }).sort({ sortOrder: 1, createdAt: 1 }).lean(),
+    ResourceProduct.find({ isActive: true }).sort({ sortOrder: 1, createdAt: 1 }).lean(),
+    User.findById(userId)
+      .select(
+        "has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks"
+      )
+      .lean(),
+  ]);
+
+  const unlockedCodes = getUnlockedResourceCodeSet(user || {});
+
+  const productsByCategory = products.reduce((acc, product) => {
+    const key = product.categoryId.toString();
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(buildProductCard({ product, unlockedCodes }));
+    return acc;
+  }, {});
+
+  const items = categories.map((category) => ({
+    id: category._id,
+    title: category.title,
+    slug: category.slug,
+    shortCode: category.shortCode,
+    description: category.description,
+    sortOrder: category.sortOrder || 0,
+    products: productsByCategory[category._id.toString()] || [],
+  }));
+
+  return {
+    categories: items,
+    userAccess: getUserResourceAccess(user || {}),
+  };
+};
+
+export const listResourceStore = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  if (!userId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  }
+
+  const payload = await fetchResourceStorePayload(userId);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource store fetched",
+    data: payload,
+  });
+});
+
+export const listUpgradeAddOnOptions = catchAsync(async (_req, res) => {
+  const options = await getUpgradeAddOnOptions();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Upgrade add-on options fetched",
+    data: options,
+  });
+});
+
+export const getResourcePreview = catchAsync(async (req, res) => {
+  const product = await getResourceProductOrThrow({
+    productId: req.params.productId,
+  });
+
+  if (!product.previewAvailable) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Preview is not available for this product");
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource preview fetched",
+    data: {
+      id: product._id,
+      code: product.code,
+      title: product.previewTitle || `${product.title} - Introduction`,
+      previewContent: product.previewContent,
+      previewUrl: product.previewUrl,
+    },
+  });
+});
+
+export const getMyResourceUnlocks = catchAsync(async (req, res) => {
+  const user = await User.findById(req.user?._id).select(
+    "has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks"
+  );
+
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource unlocks fetched",
+    data: getUserResourceAccess(user),
+  });
+});
+
+export const getPurchasedResourceContent = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  const product = await getResourceProductOrThrow({
+    productId: req.params.productId,
+  });
+
+  const user = await User.findById(userId).select(
+    "has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks"
+  );
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  if (!isResourceUnlockedForUser(user, product)) {
+    throw new AppError(httpStatus.FORBIDDEN, "Product is locked for this user");
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource content access granted",
+    data: {
+      id: product._id,
+      code: product.code,
+      title: product.title,
+      contentUrl: product.contentUrl,
+      unlocked: true,
+    },
+  });
+});
+
+export const createResourceStripePaymentIntent = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  if (!userId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  }
+
+  const product = await getResourceProductOrThrow({
+    productId: req.body?.productId,
+    productCode: req.body?.productCode,
+  });
+
+  const user = await User.findById(userId).select(
+    "has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks"
+  );
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  if (isResourceUnlockedForUser(user, product)) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Resource already unlocked",
+      data: {
+        unlocked: true,
+        productCode: product.code,
+      },
+    });
+  }
+
+  const pricing = getPriceForProduct(product);
+
+  const purchase = await ResourcePurchase.create({
+    userId,
+    categoryId: product.categoryId,
+    productId: product._id,
+    productCode: product.code,
+    purchaseType: getPurchaseType(product),
+    provider: "stripe",
+    status: "pending",
+    revenueTag: resolveResourceRevenueTag(getPurchaseType(product), product.code),
+    currency: product.currency || "USD",
+    basePrice: pricing.basePrice,
+    finalPrice: pricing.finalPrice,
+    discountAmount: pricing.discountAmount,
+    metadata: {
+      flow: "resource_store",
+    },
+  });
+
+  const stripe = getStripeClient();
+  const amount = toStripeAmount(pricing.finalPrice, product.currency);
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount,
+    currency: (product.currency || "USD").toLowerCase(),
+    description: `Resource purchase: ${product.title}`,
+    metadata: {
+      userId: userId.toString(),
+      productId: product._id.toString(),
+      productCode: product.code,
+      resourcePurchaseId: purchase._id.toString(),
+      purchaseType: "resource",
+    },
+  });
+
+  purchase.stripePaymentIntentId = paymentIntent.id;
+  await purchase.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource payment intent created",
+    data: {
+      paymentIntentId: paymentIntent.id,
+      clientSecret: paymentIntent.client_secret,
+      amount: pricing.finalPrice,
+      currency: product.currency || "USD",
+      product: {
+        id: product._id,
+        code: product.code,
+        title: product.title,
+      },
+    },
+  });
+});
+
+export const confirmResourceStripePayment = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  const paymentIntentId = req.body?.paymentIntentId;
+
+  if (!userId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  }
+  if (!paymentIntentId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "paymentIntentId is required");
+  }
+
+  const purchase = await ResourcePurchase.findOne({
+    userId,
+    stripePaymentIntentId: paymentIntentId,
+  });
+  if (!purchase) {
+    throw new AppError(httpStatus.NOT_FOUND, "Resource payment record not found");
+  }
+
+  if (purchase.status === "completed") {
+    const user = await User.findById(userId).select(
+      "has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks"
+    );
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Resource already unlocked",
+      data: {
+        unlocked: true,
+        userAccess: getUserResourceAccess(user || {}),
+      },
+    });
+  }
+
+  const stripe = getStripeClient();
+  const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+  if (paymentIntent?.metadata?.userId !== userId.toString()) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Payment intent does not match user");
+  }
+
+  if (paymentIntent?.metadata?.resourcePurchaseId !== purchase._id.toString()) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Payment intent does not match purchase");
+  }
+
+  if (paymentIntent.status !== "succeeded") {
+    throw new AppError(httpStatus.BAD_GATEWAY, "Stripe payment not completed");
+  }
+
+  const product = await ResourceProduct.findById(purchase.productId);
+  if (!product) {
+    throw new AppError(httpStatus.NOT_FOUND, "Resource product not found");
+  }
+
+  purchase.status = "completed";
+  purchase.paymentAccountFingerprint =
+    buildPaymentAccountFingerprintFromStripeIntent(paymentIntent);
+  purchase.purchasedAt = new Date();
+  await purchase.save();
+
+  const user = await applyResourceUnlocksToUser({ userId, product });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource unlocked",
+    data: {
+      unlocked: true,
+      purchase,
+      userAccess: getUserResourceAccess(user),
+    },
+  });
+});
+
+export const createResourcePayPalOrder = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  if (!userId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  }
+
+  const product = await getResourceProductOrThrow({
+    productId: req.body?.productId,
+    productCode: req.body?.productCode,
+  });
+
+  const user = await User.findById(userId).select(
+    "has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks"
+  );
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  if (isResourceUnlockedForUser(user, product)) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Resource already unlocked",
+      data: {
+        unlocked: true,
+        productCode: product.code,
+      },
+    });
+  }
+
+  const pricing = getPriceForProduct(product);
+  const token = await getPayPalAccessToken();
+
+  const orderRes = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      intent: "CAPTURE",
+      purchase_units: [
+        {
+          amount: {
+            currency_code: product.currency || "USD",
+            value: pricing.finalPrice.toFixed(2),
+          },
+          description: `Resource purchase: ${product.title}`,
+        },
+      ],
+      application_context: {
+        brand_name: "Inspectors Path",
+        landing_page: "NO_PREFERENCE",
+        user_action: "PAY_NOW",
+      },
+    }),
+  });
+
+  const orderData = await orderRes.json().catch(() => null);
+  if (!orderRes.ok || !orderData?.id) {
+    throw new AppError(httpStatus.BAD_GATEWAY, "Failed to create PayPal order");
+  }
+
+  const purchase = await ResourcePurchase.create({
+    userId,
+    categoryId: product.categoryId,
+    productId: product._id,
+    productCode: product.code,
+    purchaseType: getPurchaseType(product),
+    provider: "paypal",
+    status: "pending",
+    revenueTag: resolveResourceRevenueTag(getPurchaseType(product), product.code),
+    currency: product.currency || "USD",
+    basePrice: pricing.basePrice,
+    finalPrice: pricing.finalPrice,
+    discountAmount: pricing.discountAmount,
+    paypalOrderId: orderData.id,
+    metadata: {
+      flow: "resource_store",
+    },
+  });
+
+  const approvalLink =
+    orderData.links?.find((link) => link.rel === "approve")?.href || null;
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource PayPal order created",
+    data: {
+      orderId: orderData.id,
+      approvalLink,
+      amount: pricing.finalPrice,
+      currency: product.currency || "USD",
+      purchaseId: purchase._id,
+      product: {
+        id: product._id,
+        code: product.code,
+        title: product.title,
+      },
+    },
+  });
+});
+
+export const captureResourcePayPalOrder = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  const orderId = req.body?.orderId;
+
+  if (!userId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  }
+  if (!orderId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "orderId is required");
+  }
+
+  const purchase = await ResourcePurchase.findOne({
+    userId,
+    paypalOrderId: orderId,
+  });
+
+  if (!purchase) {
+    throw new AppError(httpStatus.NOT_FOUND, "Resource payment record not found");
+  }
+
+  if (purchase.status === "completed") {
+    const user = await User.findById(userId).select(
+      "has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks"
+    );
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Resource already unlocked",
+      data: {
+        unlocked: true,
+        userAccess: getUserResourceAccess(user || {}),
+      },
+    });
+  }
+
+  const token = await getPayPalAccessToken();
+  const captureRes = await fetch(
+    `${PAYPAL_BASE_URL}/v2/checkout/orders/${orderId}/capture`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  const captureData = await captureRes.json().catch(() => null);
+  if (!captureRes.ok) {
+    throw new AppError(httpStatus.BAD_GATEWAY, "Failed to capture PayPal order");
+  }
+
+  const purchaseState =
+    captureData?.status ||
+    captureData?.purchase_units?.[0]?.payments?.captures?.[0]?.status;
+
+  if (!purchaseState || purchaseState !== "COMPLETED") {
+    throw new AppError(httpStatus.BAD_GATEWAY, "PayPal capture not completed");
+  }
+
+  const product = await ResourceProduct.findById(purchase.productId);
+  if (!product) {
+    throw new AppError(httpStatus.NOT_FOUND, "Resource product not found");
+  }
+
+  purchase.status = "completed";
+  purchase.paymentAccountFingerprint =
+    buildPaymentAccountFingerprintFromPayPalCapture(captureData);
+  purchase.purchasedAt = new Date();
+  await purchase.save();
+
+  const user = await applyResourceUnlocksToUser({ userId, product });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource unlocked",
+    data: {
+      unlocked: true,
+      purchase,
+      userAccess: getUserResourceAccess(user),
+    },
+  });
+});
+
+export const listResourceCategoriesAdmin = catchAsync(async (_req, res) => {
+  const categories = await ResourceCategory.find()
+    .sort({ sortOrder: 1, createdAt: 1 })
+    .lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource categories fetched",
+    data: categories,
+  });
+});
+
+export const createResourceCategoryAdmin = catchAsync(async (req, res) => {
+  const title = req.body?.title?.toString().trim();
+  const slug = req.body?.slug?.toString().trim().toLowerCase();
+
+  if (!title || !slug) {
+    throw new AppError(httpStatus.BAD_REQUEST, "title and slug are required");
+  }
+
+  const exists = await ResourceCategory.findOne({ slug });
+  if (exists) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Category slug already exists");
+  }
+
+  const category = await ResourceCategory.create({
+    title,
+    slug,
+    shortCode: req.body?.shortCode?.toString().trim().toUpperCase() || "",
+    description: req.body?.description?.toString().trim() || "",
+    sortOrder: Number(req.body?.sortOrder) || 0,
+    isActive: parseBoolean(req.body?.isActive, true),
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: "Resource category created",
+    data: category,
+  });
+});
+
+export const updateResourceCategoryAdmin = catchAsync(async (req, res) => {
+  const category = await ResourceCategory.findById(req.params.categoryId);
+  if (!category) {
+    throw new AppError(httpStatus.NOT_FOUND, "Category not found");
+  }
+
+  if (req.body?.title !== undefined) {
+    const title = req.body.title?.toString().trim();
+    if (!title) {
+      throw new AppError(httpStatus.BAD_REQUEST, "title cannot be empty");
+    }
+    category.title = title;
+  }
+
+  if (req.body?.slug !== undefined) {
+    const slug = req.body.slug?.toString().trim().toLowerCase();
+    if (!slug) {
+      throw new AppError(httpStatus.BAD_REQUEST, "slug cannot be empty");
+    }
+    const exists = await ResourceCategory.findOne({ slug });
+    if (exists && exists._id.toString() !== category._id.toString()) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Category slug already exists");
+    }
+    category.slug = slug;
+  }
+
+  if (req.body?.shortCode !== undefined) {
+    category.shortCode = req.body.shortCode?.toString().trim().toUpperCase() || "";
+  }
+
+  if (req.body?.description !== undefined) {
+    category.description = req.body.description?.toString().trim() || "";
+  }
+
+  if (req.body?.sortOrder !== undefined) {
+    category.sortOrder = Number(req.body.sortOrder) || 0;
+  }
+
+  if (req.body?.isActive !== undefined) {
+    category.isActive = parseBoolean(req.body?.isActive, category.isActive);
+  }
+
+  await category.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource category updated",
+    data: category,
+  });
+});
+
+export const deleteResourceCategoryAdmin = catchAsync(async (req, res) => {
+  const category = await ResourceCategory.findById(req.params.categoryId);
+  if (!category) {
+    throw new AppError(httpStatus.NOT_FOUND, "Category not found");
+  }
+
+  const productCount = await ResourceProduct.countDocuments({ categoryId: category._id });
+  if (productCount > 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Cannot delete category with existing products"
+    );
+  }
+
+  await category.deleteOne();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource category deleted",
+    data: null,
+  });
+});
+
+export const listResourceProductsAdmin = catchAsync(async (_req, res) => {
+  const products = await ResourceProduct.find()
+    .populate("categoryId", "title slug")
+    .sort({ sortOrder: 1, createdAt: 1 })
+    .lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource products fetched",
+    data: products,
+  });
+});
+
+export const listResourcePurchasesAdmin = catchAsync(async (req, res) => {
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.max(parseInt(req.query.limit, 10) || 10, 1);
+  const skip = (page - 1) * limit;
+
+  const filter = {};
+  if (req.query.status) filter.status = req.query.status;
+  if (req.query.purchaseType) filter.purchaseType = req.query.purchaseType;
+  if (req.query.userId) filter.userId = req.query.userId;
+  if (req.query.productCode) filter.productCode = normalizeProductCode(req.query.productCode);
+
+  const [items, total] = await Promise.all([
+    ResourcePurchase.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate("userId", "name firstName lastName email")
+      .populate("productId", "title code")
+      .lean(),
+    ResourcePurchase.countDocuments(filter),
+  ]);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource purchases fetched",
+    data: {
+      purchases: items,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
+    },
+  });
+});
+
+export const createResourceProductAdmin = catchAsync(async (req, res) => {
+  const categoryId = req.body?.categoryId;
+  const code = normalizeProductCode(req.body?.code);
+  const title = req.body?.title?.toString().trim();
+
+  if (!categoryId || !code || !title) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "categoryId, code, and title are required"
+    );
+  }
+
+  const category = await ResourceCategory.findById(categoryId);
+  if (!category) {
+    throw new AppError(httpStatus.NOT_FOUND, "Category not found");
+  }
+
+  const codeExists = await ResourceProduct.findOne({ code });
+  if (codeExists) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Product code already exists");
+  }
+
+  const price = Number(req.body?.price);
+  if (Number.isNaN(price) || price < 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "price must be a valid non-negative number");
+  }
+
+  const originalPrice =
+    req.body?.originalPrice !== undefined
+      ? Number(req.body.originalPrice)
+      : price;
+  const upgradeDiscountPrice =
+    req.body?.upgradeDiscountPrice !== undefined && req.body?.upgradeDiscountPrice !== null
+      ? Number(req.body.upgradeDiscountPrice)
+      : null;
+  const uploadedAssets = await uploadResourceProductAssets(req);
+  const coverImageUrl = uploadedAssets.coverImageUrl
+    ? uploadedAssets.coverImageUrl
+    : req.body?.coverImageUrl?.toString().trim() || "";
+  const contentUrl = uploadedAssets.contentUrl
+    ? uploadedAssets.contentUrl
+    : req.body?.contentUrl?.toString().trim() || "";
+
+  const product = await ResourceProduct.create({
+    categoryId,
+    code,
+    title,
+    shortDescription: req.body?.shortDescription?.toString().trim() || "",
+    fullDescription: req.body?.fullDescription?.toString().trim() || "",
+    coverImageUrl,
+    contentUrl,
+    price,
+    originalPrice,
+    upgradeDiscountPrice,
+    currency: req.body?.currency?.toString().trim().toUpperCase() || "USD",
+    isBundle: parseBoolean(req.body?.isBundle, false),
+    bundleIncludes: parseBundleIncludes(req.body?.bundleIncludes),
+    previewAvailable: parseBoolean(req.body?.previewAvailable, true),
+    previewTitle: req.body?.previewTitle?.toString().trim() || "Introduction",
+    previewContent: req.body?.previewContent?.toString().trim() || "",
+    previewUrl: req.body?.previewUrl?.toString().trim() || "",
+    sortOrder: Number(req.body?.sortOrder) || 0,
+    isActive: parseBoolean(req.body?.isActive, true),
+    showInUpgradeAddOn: parseBoolean(req.body?.showInUpgradeAddOn, true),
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: "Resource product created",
+    data: product,
+  });
+});
+
+export const updateResourceProductAdmin = catchAsync(async (req, res) => {
+  const product = await ResourceProduct.findById(req.params.productId);
+  if (!product) {
+    throw new AppError(httpStatus.NOT_FOUND, "Product not found");
+  }
+
+  if (req.body?.categoryId !== undefined) {
+    const category = await ResourceCategory.findById(req.body.categoryId);
+    if (!category) {
+      throw new AppError(httpStatus.NOT_FOUND, "Category not found");
+    }
+    product.categoryId = req.body.categoryId;
+  }
+
+  if (req.body?.code !== undefined) {
+    const code = normalizeProductCode(req.body.code);
+    if (!code) {
+      throw new AppError(httpStatus.BAD_REQUEST, "code cannot be empty");
+    }
+    const exists = await ResourceProduct.findOne({ code });
+    if (exists && exists._id.toString() !== product._id.toString()) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Product code already exists");
+    }
+    product.code = code;
+  }
+
+  const editableTextFields = [
+    "title",
+    "shortDescription",
+    "fullDescription",
+    "previewTitle",
+    "previewContent",
+    "previewUrl",
+    "currency",
+  ];
+
+  editableTextFields.forEach((field) => {
+    if (req.body?.[field] !== undefined) {
+      product[field] = req.body[field]?.toString().trim() || "";
+    }
+  });
+
+  if (req.body?.coverImageUrl !== undefined) {
+    product.coverImageUrl = req.body.coverImageUrl?.toString().trim() || "";
+  }
+
+  if (req.body?.contentUrl !== undefined) {
+    product.contentUrl = req.body.contentUrl?.toString().trim() || "";
+  }
+
+  const uploadedAssets = await uploadResourceProductAssets(req);
+  if (uploadedAssets.coverImageUrl) {
+    product.coverImageUrl = uploadedAssets.coverImageUrl;
+  }
+  if (uploadedAssets.contentUrl) {
+    product.contentUrl = uploadedAssets.contentUrl;
+  }
+
+  if (req.body?.price !== undefined) {
+    const price = Number(req.body.price);
+    if (Number.isNaN(price) || price < 0) {
+      throw new AppError(httpStatus.BAD_REQUEST, "price must be valid");
+    }
+    product.price = price;
+  }
+
+  if (req.body?.originalPrice !== undefined) {
+    const originalPrice = Number(req.body.originalPrice);
+    if (Number.isNaN(originalPrice) || originalPrice < 0) {
+      throw new AppError(httpStatus.BAD_REQUEST, "originalPrice must be valid");
+    }
+    product.originalPrice = originalPrice;
+  }
+
+  if (req.body?.upgradeDiscountPrice !== undefined) {
+    if (req.body.upgradeDiscountPrice === null || req.body.upgradeDiscountPrice === "") {
+      product.upgradeDiscountPrice = null;
+    } else {
+      const upgradeDiscountPrice = Number(req.body.upgradeDiscountPrice);
+      if (Number.isNaN(upgradeDiscountPrice) || upgradeDiscountPrice < 0) {
+        throw new AppError(httpStatus.BAD_REQUEST, "upgradeDiscountPrice must be valid");
+      }
+      product.upgradeDiscountPrice = upgradeDiscountPrice;
+    }
+  }
+
+  if (req.body?.isBundle !== undefined) {
+    product.isBundle = parseBoolean(req.body.isBundle, product.isBundle);
+  }
+
+  if (req.body?.bundleIncludes !== undefined) {
+    product.bundleIncludes = parseBundleIncludes(req.body.bundleIncludes);
+  }
+
+  if (req.body?.previewAvailable !== undefined) {
+    product.previewAvailable = parseBoolean(req.body.previewAvailable, product.previewAvailable);
+  }
+
+  if (req.body?.sortOrder !== undefined) {
+    product.sortOrder = Number(req.body.sortOrder) || 0;
+  }
+
+  if (req.body?.isActive !== undefined) {
+    product.isActive = parseBoolean(req.body.isActive, product.isActive);
+  }
+
+  if (req.body?.showInUpgradeAddOn !== undefined) {
+    product.showInUpgradeAddOn = parseBoolean(
+      req.body.showInUpgradeAddOn,
+      product.showInUpgradeAddOn
+    );
+  }
+
+  await product.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource product updated",
+    data: product,
+  });
+});
+
+export const deleteResourceProductAdmin = catchAsync(async (req, res) => {
+  const product = await ResourceProduct.findById(req.params.productId);
+  if (!product) {
+    throw new AppError(httpStatus.NOT_FOUND, "Product not found");
+  }
+
+  await product.deleteOne();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource product deleted",
+    data: null,
+  });
+});

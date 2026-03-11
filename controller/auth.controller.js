@@ -6,6 +6,12 @@ import httpStatus from "http-status";
 import sendResponse from "../utils/sendResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { User } from "./../model/user.model.js";
+import {
+  createReferralRelationshipOnSignup,
+  generateUniqueReferralCode,
+  normalizeReferralCode,
+  validateReferralAtSignup,
+} from "../utils/referral.service.js";
 
 const createSessionId = () =>
   `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
@@ -23,9 +29,11 @@ const resolveInstallationId = (req) => {
   return normalizeInstallationId(headerInstallationId || bodyInstallationId);
 };
 
-const getStoredInstallationId = (user) => normalizeInstallationId(user?.activeInstallationId);
+const getStoredInstallationId = (user) =>
+  normalizeInstallationId(user?.activeInstallationId || user?.activeDeviceId);
 
 const setStoredInstallationId = (user, installationId) => {
+  user.activeDeviceId = installationId;
   user.activeInstallationId = installationId;
 };
 
@@ -77,11 +85,33 @@ export const register = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
   }
 
+  const referralCodeInput = normalizeReferralCode(
+    req.body?.referralCode ?? req.body?.referredByCode ?? req.query?.ref
+  );
+  let referrer = null;
+
+  if (referralCodeInput) {
+    referrer = await User.findOne({ referralCode: referralCodeInput }).select(
+      "_id email referralCode activeInstallationId"
+    );
+    validateReferralAtSignup({
+      referrer,
+      email,
+      installationId,
+    });
+  }
+
+  const generatedReferralCode = await generateUniqueReferralCode();
+
   const user = await User.create({
     phone,
     name,
     email,
     password,
+    referralCode: generatedReferralCode,
+    referredBy: referrer?._id || null,
+    referredByCode: referrer?.referralCode || "",
+    referredAt: referrer ? new Date() : null,
     role: "user",
     verificationInfo: { token: "", verified: true },
   });
@@ -103,6 +133,15 @@ export const register = catchAsync(async (req, res) => {
   user.activeSessionId = sessionId;
   setStoredInstallationId(user, installationId);
   await user.save();
+
+  if (referrer) {
+    await createReferralRelationshipOnSignup({
+      referrer,
+      referredUser: user,
+      referralCode: referrer.referralCode,
+    });
+  }
+
   user.accessToken = accessToken;
 
   const userObj = user.toObject();
@@ -443,6 +482,8 @@ export const logout = catchAsync(async (req, res) => {
     {
       refreshToken: "",
       activeSessionId: "",
+      activeDeviceId: "",
+      activeInstallationId: "",
     },
     { new: true }
   );

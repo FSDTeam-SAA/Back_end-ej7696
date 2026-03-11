@@ -37,6 +37,34 @@ app.use(cookieParser());
 
 app.use("/public", express.static("public"));
 
+app.get("/r/:code", (req, res) => {
+  const referralCode = req.params.code?.toString().trim().toUpperCase();
+  if (!referralCode) {
+    return res.status(400).json({
+      success: false,
+      message: "Referral code is required",
+    });
+  }
+
+  const clientUrl = process.env.CLIENT_URL?.toString().trim();
+  if (clientUrl) {
+    const referralPath =
+      process.env.REFERRAL_REDIRECT_PATH?.toString().trim() || "/register";
+    const redirectUrl = `${clientUrl.replace(/\/+$/, "")}${referralPath}?ref=${encodeURIComponent(
+      referralCode
+    )}`;
+    return res.redirect(302, redirectUrl);
+  }
+
+  return res.status(200).json({
+    success: true,
+    message: "Referral code captured",
+    data: {
+      referralCode,
+    },
+  });
+});
+
 // Mount the main router
 app.use("/api/v1", router);
 

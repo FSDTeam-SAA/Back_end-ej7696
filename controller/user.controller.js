@@ -17,6 +17,7 @@ const PROFESSIONAL_SUBSCRIPTION_MONTHS = 3;
 const SESSION_CLEAR_UPDATE = {
   refreshToken: "",
   activeSessionId: "",
+  activeDeviceId: "",
   activeInstallationId: "",
 };
 
@@ -33,6 +34,9 @@ const SUB_ADMIN_PERMISSIONS = [
   "view_activity_logs",
   "manual_exam_unlocks",
   "credential_management",
+  "manage_resource_store",
+  "manage_referral_payouts",
+  "view_referral_analytics",
 ];
 
 const parseStatus = (value) => {
@@ -105,8 +109,9 @@ const addMonths = (date, months) => {
 
 const buildInstallationSessionData = (user) => ({
   userId: user._id,
+  activeDeviceId: user.activeDeviceId || "",
   activeInstallationId: user.activeInstallationId || "",
-  hasActiveInstallation: Boolean(user.activeInstallationId),
+  hasActiveInstallation: Boolean(user.activeDeviceId || user.activeInstallationId),
 });
 
 export const getProfile = catchAsync(async (req, res) => {
@@ -120,7 +125,9 @@ export const getProfile = catchAsync(async (req, res) => {
 });
 
 export const getMyInstallationSession = catchAsync(async (req, res) => {
-  const user = await User.findById(req.user._id).select("activeInstallationId");
+  const user = await User.findById(req.user._id).select(
+    "activeDeviceId activeInstallationId"
+  );
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   sendResponse(res, {
@@ -381,7 +388,9 @@ export const getUserDetails = catchAsync(async (req, res) => {
 });
 
 export const getUserInstallationSession = catchAsync(async (req, res) => {
-  const user = await User.findById(req.params.id).select("activeInstallationId");
+  const user = await User.findById(req.params.id).select(
+    "activeDeviceId activeInstallationId"
+  );
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   sendResponse(res, {
@@ -395,7 +404,7 @@ export const getUserInstallationSession = catchAsync(async (req, res) => {
 export const clearUserInstallationSession = catchAsync(async (req, res) => {
   const user = await User.findByIdAndUpdate(req.params.id, SESSION_CLEAR_UPDATE, {
     new: true,
-  }).select("activeInstallationId");
+  }).select("activeDeviceId activeInstallationId");
   if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
 
   sendResponse(res, {

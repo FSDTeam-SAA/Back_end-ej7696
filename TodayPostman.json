@@ -1,0 +1,567 @@
+{
+  "info": {
+    "name": "Today API Work - eBook + Referral + Upsell",
+    "_postman_id": "2f8d3e22-4fe8-4676-a6ef-c0d0e8a266ad",
+    "description": "Collection for all backend work completed today: resources/eBook store, referral/affiliate program, and updated professional plan upsell/payment flows.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:5000" },
+    { "key": "token", "value": "" },
+    { "key": "admin_token", "value": "" },
+    { "key": "installation_id", "value": "postman-user-installation-001" },
+    { "key": "admin_installation_id", "value": "postman-admin-installation-001" },
+    { "key": "examId", "value": "" },
+    { "key": "userId", "value": "" },
+    { "key": "referralCode", "value": "IPABC1234" },
+    { "key": "resourceProductId", "value": "" },
+    { "key": "resourceCategoryId", "value": "" },
+    { "key": "planPurchaseId", "value": "" },
+    { "key": "payoutRequestId", "value": "" },
+    { "key": "paypalOrderId", "value": "" },
+    { "key": "paymentIntentId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth + Referral Signup",
+      "item": [
+        {
+          "name": "Register (With Optional Referral Code)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Today User\",\n  \"email\": \"today.user@example.com\",\n  \"password\": \"Secret123!\",\n  \"confirmPassword\": \"Secret123!\",\n  \"installationId\": \"{{installation_id}}\",\n  \"referralCode\": \"{{referralCode}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Login (User)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"today.user@example.com\",\n  \"password\": \"Secret123!\",\n  \"installationId\": \"{{installation_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Login (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"Secret123!\",\n  \"installationId\": \"{{admin_installation_id}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Professional Upgrade (Updated)",
+      "item": [
+        {
+          "name": "Get Professional Plan + Add-On Options",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/payments/plan/professional"
+          }
+        },
+        {
+          "name": "Stripe - Create Professional Plan PaymentIntent (With Add-On)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/payments/plan/professional/stripe/create",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"examId\": \"{{examId}}\",\n  \"addonProductCode\": \"api510_bundle\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Stripe - Confirm Professional Plan Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/payments/plan/professional/stripe/confirm",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentIntentId\": \"{{paymentIntentId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "PayPal - Create Professional Plan Order (With Add-On)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/payments/plan/professional/paypal/create",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"examId\": \"{{examId}}\",\n  \"addonProductCode\": \"api510_inspection_guide\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "PayPal - Capture Professional Plan Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/payments/plan/professional/paypal/capture",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{paypalOrderId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - List Professional Plan Purchases",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/payments/admin/plan-purchases?page=1&limit=20"
+          }
+        },
+        {
+          "name": "Admin - Update Professional Plan Purchase Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/payments/admin/plan-purchases/{{planPurchaseId}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"refunded\",\n  \"reason\": \"Manual test refund\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - Revenue Summary (Updated)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/payments/admin/summary"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Resources (eBook Store)",
+      "item": [
+        {
+          "name": "List Resource Store",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/store"
+          }
+        },
+        {
+          "name": "List Upgrade Add-On Options",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/upgrade-addon-options"
+          }
+        },
+        {
+          "name": "Preview Resource Product",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/products/{{resourceProductId}}/preview"
+          }
+        },
+        {
+          "name": "Get Purchased Resource Content",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/products/{{resourceProductId}}/content"
+          }
+        },
+        {
+          "name": "Get My Resource Unlocks",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/my-unlocks"
+          }
+        },
+        {
+          "name": "Stripe - Create Resource PaymentIntent",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/purchase/stripe/create",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productCode\": \"api510_inspection_guide\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Stripe - Confirm Resource Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/purchase/stripe/confirm",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentIntentId\": \"{{paymentIntentId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "PayPal - Create Resource Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/purchase/paypal/create",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productCode\": \"api510_bundle\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "PayPal - Capture Resource Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/purchase/paypal/capture",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{paypalOrderId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - List Resource Categories",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/categories"
+          }
+        },
+        {
+          "name": "Admin - Create Resource Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/categories",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"API 570 - Piping Inspector\",\n  \"slug\": \"api-570\",\n  \"shortCode\": \"API570\",\n  \"description\": \"Piping inspection resources\",\n  \"sortOrder\": 20,\n  \"isActive\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - Update Resource Category",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/categories/{{resourceCategoryId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"API 570 - Piping Inspector (Updated)\",\n  \"sortOrder\": 21\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - Delete Resource Category",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/categories/{{resourceCategoryId}}"
+          }
+        },
+        {
+          "name": "Admin - List Resource Products",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/products"
+          }
+        },
+        {
+          "name": "Admin - Create Resource Product",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/products",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"categoryId\": \"{{resourceCategoryId}}\",\n  \"code\": \"api570_inspection_guide\",\n  \"title\": \"How to Do an API 570 Inspection\",\n  \"shortDescription\": \"Piping-focused field inspection guide\",\n  \"price\": 59,\n  \"originalPrice\": 59,\n  \"upgradeDiscountPrice\": 35,\n  \"currency\": \"USD\",\n  \"previewAvailable\": true,\n  \"previewTitle\": \"Introduction\",\n  \"previewContent\": \"Intro content...\",\n  \"isActive\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - Update Resource Product",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/products/{{resourceProductId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price\": 55,\n  \"upgradeDiscountPrice\": 33\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - Delete Resource Product",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/products/{{resourceProductId}}"
+          }
+        },
+        {
+          "name": "Admin - List Resource Purchases",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/resources/admin/purchases?page=1&limit=20"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Referrals / Affiliate",
+      "item": [
+        {
+          "name": "Validate Referral Code (Public)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/referrals/public/{{referralCode}}"
+          }
+        },
+        {
+          "name": "Validate Referral Code Alias /r (API)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/referrals/r/{{referralCode}}"
+          }
+        },
+        {
+          "name": "My Referral Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/referrals/me"
+          }
+        },
+        {
+          "name": "My Referred Users",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/referrals/referred-users?page=1&limit=20"
+          }
+        },
+        {
+          "name": "My Referral Ledger",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/referrals/ledger?page=1&limit=20"
+          }
+        },
+        {
+          "name": "Convert Referral Balance to App Credit",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/referrals/convert-to-credit",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 20\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Request Cash Payout",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/referrals/cash-payout-request",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 100\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Admin - Referral Overview",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/referrals/admin/overview"
+          }
+        },
+        {
+          "name": "Admin - List Payout Requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/referrals/admin/payout-requests?page=1&limit=20"
+          }
+        },
+        {
+          "name": "Admin - Update Payout Request Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}", "type": "text" },
+              { "key": "x-app-installation-id", "value": "{{admin_installation_id}}", "type": "text" }
+            ],
+            "url": "{{base_url}}/api/v1/referrals/admin/payout-requests/{{payoutRequestId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\",\n  \"notes\": \"Approved by finance team\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Referral Link (Root Route)",
+      "item": [
+        {
+          "name": "Root Referral Link /r/:code",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/r/{{referralCode}}"
+          }
+        }
+      ]
+    }
+  ]
+}
