@@ -1,0 +1,91 @@
+import mongoose, { Schema } from "mongoose";
+
+const referralRewardSchema = new Schema(
+  {
+    relationshipId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ReferralRelationship",
+      required: true,
+      index: true,
+    },
+    referrerUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    referredUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    planPurchaseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ProfessionalPlanPurchase",
+      required: true,
+      unique: true,
+      index: true,
+    },
+    currency: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: "USD",
+    },
+    commissionRate: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 1,
+      default: 0.1,
+    },
+    commissionAmount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    remainingAmount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    status: {
+      type: String,
+      enum: ["pending", "available", "paid_out", "voided"],
+      default: "pending",
+      index: true,
+    },
+    pendingUntil: {
+      type: Date,
+      required: true,
+      index: true,
+    },
+    availableAt: {
+      type: Date,
+      default: null,
+    },
+    paidOutAt: {
+      type: Date,
+      default: null,
+    },
+    voidedAt: {
+      type: Date,
+      default: null,
+    },
+    voidReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    metadata: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
+  },
+  { timestamps: true }
+);
+
+referralRewardSchema.index({ referrerUserId: 1, status: 1, pendingUntil: 1 });
+
+export const ReferralReward = mongoose.model("ReferralReward", referralRewardSchema);

@@ -10,6 +10,8 @@ import paymentRoute from "../route/payment.route.js";
 import adminRoute from "../route/admin.route.js";
 import supportRoute from "../route/support.route.js";
 import configRoute from "../route/config.route.js";
+import resourceRoute from "../route/resource.route.js";
+import referralRoute from "../route/referral.route.js";
 
 const router = express.Router();
 
@@ -23,6 +25,8 @@ router.use("/analytics", analyticsRoute);
 router.use("/payments", paymentRoute);
 router.use("/admin", adminRoute);
 router.use("/support", supportRoute);
+router.use("/resources", resourceRoute);
+router.use("/referrals", referralRoute);
 
 router.use("/", configRoute);
 

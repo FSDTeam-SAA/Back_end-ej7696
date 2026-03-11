@@ -135,7 +135,26 @@ const userSchema = new Schema(
     },
     referralCode: {
       type: String,
-      default: () => Math.random().toString(36).substr(2, 9).toUpperCase(),
+      trim: true,
+      uppercase: true,
+      default: "",
+      index: true,
+    },
+    referredBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    referredByCode: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: "",
+    },
+    referredAt: {
+      type: Date,
+      default: null,
     },
     status: {
       type: String,
@@ -164,6 +183,27 @@ const userSchema = new Schema(
       type: Date,
       default: null,
     },
+    has_api510_inspection_guide: {
+      type: Boolean,
+      default: false,
+    },
+    has_api510_report_guide: {
+      type: Boolean,
+      default: false,
+    },
+    has_api510_bundle: {
+      type: Boolean,
+      default: false,
+    },
+    resourceUnlocks: {
+      type: [String],
+      default: [],
+    },
+    appCreditBalance: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     verificationInfo: {
       verified: { type: Boolean, default: false },
       token: { type: String, default: "" },
@@ -176,6 +216,7 @@ const userSchema = new Schema(
     fine: { type: Number, default: 0 },
     refreshToken: { type: String, default: "" },
     activeSessionId: { type: String, default: "" },
+    activeDeviceId: { type: String, default: "" },
     activeInstallationId: { type: String, default: "" },
     review: [
       {
@@ -202,6 +243,9 @@ userSchema.pre("save", async function (next) {
   if (this.isModified("password")) {
     const saltRounds = Number(process.env.bcrypt_salt_round) || 10;
     this.password = await bcrypt.hash(this.password, saltRounds);
+  }
+  if (this.isModified("referralCode") && this.referralCode) {
+    this.referralCode = this.referralCode.toString().trim().toUpperCase();
   }
   if (this.isModified("addresses")) {
     let defaultFound = false;
