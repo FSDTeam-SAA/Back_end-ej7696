@@ -23,31 +23,75 @@ export const io = new Server(server, {
 });
 app.set("io", io);
 
-const allowedOrigins = [
+const normalizeOrigin = (origin) =>
+  origin?.toString().trim().replace(/\/+$/, "");
+
+const defaultAllowedOrigins = [
   "http://localhost:3000",
+  "http://127.0.0.1:3000",
   "http://10.10.5.49:3000",
   "http://10.10.5.49",
 ];
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "x-app-installation-id",
-      "x-installation-id",
-    ],
-  })
+const allowedOrigins = new Set(
+  [
+    ...defaultAllowedOrigins,
+    process.env.CLIENT_URL,
+    ...(process.env.CORS_ALLOWED_ORIGINS || "").split(","),
+  ]
+    .map(normalizeOrigin)
+    .filter(Boolean)
 );
+
+const isTrustedDevOrigin = (origin) => {
+  if ((process.env.NODE_ENV || "development") === "production") return false;
+
+  try {
+    const parsedOrigin = new URL(origin);
+    const isLocalHost = ["localhost", "127.0.0.1"].includes(
+      parsedOrigin.hostname
+    );
+    const isIPv4Host = /^(\d{1,3}\.){3}\d{1,3}$/.test(parsedOrigin.hostname);
+
+    return (
+      parsedOrigin.protocol === "http:" &&
+      parsedOrigin.port === "3000" &&
+      (isLocalHost || isIPv4Host)
+    );
+  } catch {
+    return false;
+  }
+};
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    const cleanedOrigin = normalizeOrigin(origin);
+
+    if (!cleanedOrigin) {
+      return callback(null, true);
+    }
+
+    if (
+      allowedOrigins.has(cleanedOrigin) ||
+      isTrustedDevOrigin(cleanedOrigin)
+    ) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "x-app-installation-id",
+    "x-installation-id",
+  ],
+};
+
+app.use(cors(corsOptions));
+app.options("/{*any}", cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
