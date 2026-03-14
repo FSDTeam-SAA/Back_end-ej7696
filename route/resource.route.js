@@ -25,7 +25,7 @@ import upload from "../middleware/multer.middleware.js";
 const router = express.Router();
 
 router.get("/store", protect, listResourceStore);
-router.get("/upgrade-addon-options", protect, listUpgradeAddOnOptions);
+router.get("/upgrade-addon-options", listUpgradeAddOnOptions);
 router.get("/products/:productId/preview", protect, getResourcePreview);
 router.get("/products/:productId/content", protect, getPurchasedResourceContent);
 router.get("/my-unlocks", protect, getMyResourceUnlocks);
