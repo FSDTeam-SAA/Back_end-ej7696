@@ -63,10 +63,33 @@ const resourcePurchaseSchema = new Schema(
       required: true,
       min: 0,
     },
+     referralDiscountRate: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 1,
+    },
+    referralDiscountAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     discountAmount: {
       type: Number,
       default: 0,
       min: 0,
+    },
+    referralCodeApplied: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: "",
+    },
+    referralRelationshipId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ReferralRelationship",
+      default: null,
+      index: true,
     },
     stripePaymentIntentId: {
       type: String,

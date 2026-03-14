@@ -23,8 +23,13 @@ const referralRewardSchema = new Schema(
     planPurchaseId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ProfessionalPlanPurchase",
-      required: true,
-      unique: true,
+      default: null,
+      index: true,
+    },
+    resourcePurchaseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ResourcePurchase",
+      default: null,
       index: true,
     },
     currency: {
@@ -87,5 +92,7 @@ const referralRewardSchema = new Schema(
 );
 
 referralRewardSchema.index({ referrerUserId: 1, status: 1, pendingUntil: 1 });
+referralRewardSchema.index({ planPurchaseId: 1 }, { unique: true, sparse: true });
+referralRewardSchema.index({ resourcePurchaseId: 1 }, { unique: true, sparse: true });
 
 export const ReferralReward = mongoose.model("ReferralReward", referralRewardSchema);
