@@ -498,12 +498,46 @@ export const listResourceStore = catchAsync(async (req, res) => {
 
 export const listUpgradeAddOnOptions = catchAsync(async (_req, res) => {
   const options = await getUpgradeAddOnOptions();
+  const optionIds = options
+    .map((item) => item?._id || item?.id)
+    .filter(Boolean)
+    .map((id) => id.toString());
+
+  let productById = new Map();
+  if (optionIds.length) {
+    const products = await ResourceProduct.find({
+      _id: { $in: optionIds },
+    })
+      .select("coverImageUrl")
+      .lean();
+
+    productById = new Map(products.map((product) => [product._id.toString(), product]));
+  }
+
+  const sanitizedOptions = options.map((item) => {
+    const rawId = item?._id || item?.id;
+    const normalizedId = rawId ? rawId.toString() : "";
+    const product = productById.get(normalizedId);
+
+    return {
+      id: item?.id || normalizedId,
+      code: item?.code || "",
+      title: item?.title || "",
+      basePrice: item?.basePrice ?? item?.regularPrice ?? 0,
+      regularPrice: item?.regularPrice ?? item?.price ?? 0,
+      upgradeDiscountPrice:
+        item?.upgradeDiscountPrice ?? item?.regularPrice ?? item?.price ?? 0,
+      currency: item?.currency || "USD",
+      isBundle: Boolean(item?.isBundle),
+      coverImageUrl: item?.coverImageUrl || product?.coverImageUrl || "",
+    };
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Upgrade add-on options fetched",
-    data: options,
+    data: sanitizedOptions,
   });
 });
 
