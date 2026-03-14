@@ -238,25 +238,30 @@ export const markRelationshipDisqualified = async ({
 export const createPendingReferralReward = async ({
   relationship,
   planPurchase,
+  resourcePurchase,
   commissionAmount,
   commissionRate,
   currency,
+  metadata,
 }) => {
-  if (!relationship || !planPurchase) return null;
+  if (!relationship || (!planPurchase && !resourcePurchase)) return null;
   const normalizedAmount = roundCurrency(commissionAmount);
   if (normalizedAmount <= 0) return null;
 
-  const existing = await ReferralReward.findOne({ planPurchaseId: planPurchase._id });
+  const existingFilter = planPurchase
+    ? { planPurchaseId: planPurchase._id }
+    : { resourcePurchaseId: resourcePurchase._id };
+
+  const existing = await ReferralReward.findOne(existingFilter);
   if (existing) return existing;
 
   const pendingUntil = new Date();
   pendingUntil.setDate(pendingUntil.getDate() + REFERRAL_PENDING_DAYS);
 
-  return ReferralReward.create({
+  const payload = {
     relationshipId: relationship._id,
     referrerUserId: relationship.referrerUserId,
     referredUserId: relationship.referredUserId,
-    planPurchaseId: planPurchase._id,
     currency: currency || "USD",
     commissionRate,
     commissionAmount: normalizedAmount,
@@ -265,8 +270,19 @@ export const createPendingReferralReward = async ({
     pendingUntil,
     metadata: {
       referralCode: relationship.referralCode,
+      ...(metadata || {}),
     },
-  });
+  };
+
+  if (planPurchase) {
+    payload.planPurchaseId = planPurchase._id;
+  }
+
+  if (resourcePurchase) {
+    payload.resourcePurchaseId = resourcePurchase._id;
+  }
+
+  return ReferralReward.create(payload);
 };
 
 export const voidReferralRewardsForPlanPurchase = async ({ planPurchaseId, reason }) => {
