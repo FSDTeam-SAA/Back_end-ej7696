@@ -7,6 +7,9 @@ import { ReferralPayoutRequest } from "../model/referralPayoutRequest.model.js";
 import { ReferralRelationship } from "../model/referralRelationship.model.js";
 import { ReferralReward } from "../model/referralReward.model.js";
 import {
+  CASH_PAYOUT_MIN_BALANCE,
+  REFERRAL_DISCOUNT_RATE,
+  REFERRAL_PENDING_DAYS,
   buildReferralLink,
   convertAvailableBalanceToAppCredit,
   createCashPayoutRequest,
@@ -18,6 +21,68 @@ import {
   releaseMaturedReferralRewards,
   updateCashPayoutRequestStatus,
 } from "../utils/referral.service.js";
+
+const REFERRAL_PROGRAM_HEADLINE = "Help Your Friend Pass Their Certification";
+const REFERRAL_PROGRAM_DESCRIPTION =
+  "Invite someone preparing for API certification exams. If they upgrade using your referral code, you earn 10% commission and they get 10% discount.";
+const REFERRAL_SHARE_CHANNELS = [
+  "copy_link",
+  "whatsapp",
+  "linkedin",
+  "sms",
+  "facebook",
+  "instagram",
+];
+
+const buildReferralShareMessage = ({ referralCode, referralLink }) => {
+  const appStoreLink =
+    process.env.REFERRAL_APP_STORE_URL ||
+    process.env.APP_STORE_URL ||
+    process.env.CLIENT_URL ||
+    "";
+
+  const lines = [
+    "I have been using Inspectors Path to practice for API certification exams.",
+    "",
+    "The app has realistic exam questions and full exam simulations that help you prepare for the real API exam.",
+    "",
+    "If you are studying for API 510, 570, 653 or any API exams, it is worth checking out.",
+    "",
+    `Use my referral code and get ${Math.round(
+      REFERRAL_DISCOUNT_RATE * 100
+    )}% off the Professional Plan.`,
+  ];
+
+  if (appStoreLink) {
+    lines.push("", `Download the app here: ${appStoreLink}`);
+  }
+
+  lines.push("", `Referral Code: ${referralCode}`, `Referral Link: ${referralLink}`);
+  return lines.join("\n").trim();
+};
+
+const buildReferralProgramPayload = ({ referralCode, referralLink }) => ({
+  headline: REFERRAL_PROGRAM_HEADLINE,
+  description: REFERRAL_PROGRAM_DESCRIPTION,
+  referrerCommissionPercent: Math.round(REFERRAL_DISCOUNT_RATE * 100),
+  newUserDiscountPercent: Math.round(REFERRAL_DISCOUNT_RATE * 100),
+  pendingPeriodDays: REFERRAL_PENDING_DAYS,
+  minimumCashPayout: CASH_PAYOUT_MIN_BALANCE,
+  statusGuide: {
+    pending: "Commission is waiting for the pending window to pass.",
+    available: "Commission is ready for conversion or cash payout.",
+    paid_out: "Commission has already been converted or paid out.",
+  },
+  shareChannels: REFERRAL_SHARE_CHANNELS,
+  shareMessage: buildReferralShareMessage({ referralCode, referralLink }),
+});
+
+const buildReferralActionPayload = (summary) => ({
+  canConvertToAppCredit: Number(summary?.availableBalance || 0) > 0,
+  canRequestCashPayout:
+    Number(summary?.availableBalance || 0) >= CASH_PAYOUT_MIN_BALANCE,
+  minimumCashPayout: CASH_PAYOUT_MIN_BALANCE,
+});
 
 const ensureUserReferralIdentity = async (userId) => {
   const user = await User.findById(userId).select("referralCode appCreditBalance");
@@ -41,6 +106,11 @@ export const getMyReferralProfile = catchAsync(async (req, res) => {
 
   const user = await ensureUserReferralIdentity(userId);
   const summary = await getReferralSummary(userId);
+  const referralLink = buildReferralLink(user.referralCode);
+  const program = buildReferralProgramPayload({
+    referralCode: user.referralCode,
+    referralLink,
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -48,10 +118,32 @@ export const getMyReferralProfile = catchAsync(async (req, res) => {
     message: "Referral profile fetched",
     data: {
       referralCode: user.referralCode,
-      referralLink: buildReferralLink(user.referralCode),
+      referralLink,
       appCreditBalance: Number(user.appCreditBalance || 0),
       earnings: summary,
+      actions: buildReferralActionPayload(summary),
+      program,
     },
+  });
+});
+
+export const getMyReferralProgram = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  if (!userId) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  }
+
+  const user = await ensureUserReferralIdentity(userId);
+  const referralLink = buildReferralLink(user.referralCode);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Referral program config fetched",
+    data: buildReferralProgramPayload({
+      referralCode: user.referralCode,
+      referralLink,
+    }),
   });
 });
 
@@ -119,12 +211,17 @@ export const getMyReferralLedger = catchAsync(async (req, res) => {
     page: req.query.page,
     limit: req.query.limit,
   });
+  const summary = await getReferralSummary(userId);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Referral ledger fetched",
-    data,
+    data: {
+      ...data,
+      earnings: summary,
+      actions: buildReferralActionPayload(summary),
+    },
   });
 });
 

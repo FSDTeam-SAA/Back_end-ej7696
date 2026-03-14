@@ -27,7 +27,7 @@ export const getUpgradeAddOnOptions = async () => {
     .lean();
 
   return options.map((item) => ({
-    id: item._id,
+    id: item?._id?.toString?.() || "",
     code: item.code,
     title: item.title,
     basePrice: item.originalPrice ?? item.price,
@@ -35,6 +35,7 @@ export const getUpgradeAddOnOptions = async () => {
     upgradeDiscountPrice: item.upgradeDiscountPrice ?? item.price,
     currency: item.currency || "USD",
     isBundle: Boolean(item.isBundle),
+    coverImageUrl: item.coverImageUrl || "",
   }));
 };
 
