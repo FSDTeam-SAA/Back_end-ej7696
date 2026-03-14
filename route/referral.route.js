@@ -3,6 +3,7 @@ import {
   convertReferralBalanceToCredit,
   getMyReferralLedger,
   getMyReferralProfile,
+  getMyReferralProgram,
   getMyReferredUsers,
   getPublicReferralCode,
   getReferralOverviewAdmin,
@@ -18,6 +19,7 @@ router.get("/public/:code", getPublicReferralCode);
 router.get("/r/:code", getPublicReferralCode);
 
 router.get("/me", protect, getMyReferralProfile);
+router.get("/program", protect, getMyReferralProgram);
 router.get("/referred-users", protect, getMyReferredUsers);
 router.get("/ledger", protect, getMyReferralLedger);
 router.post("/convert-to-credit", protect, convertReferralBalanceToCredit);
