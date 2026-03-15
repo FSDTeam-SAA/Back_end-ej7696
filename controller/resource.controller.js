@@ -1125,7 +1125,7 @@ export const listResourcePurchasesAdmin = catchAsync(async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate("userId", "name firstName lastName email")
+      .populate("userId", "name firstName lastName email avatar")
       .populate("productId", "title code")
       .lean(),
     ResourcePurchase.countDocuments(filter),
