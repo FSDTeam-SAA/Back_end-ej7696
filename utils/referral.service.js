@@ -28,11 +28,12 @@ const buildReferralCodeCandidate = () => {
   return `IP${raw}`;
 };
 
-export const buildReferralLink = (referralCode) => {
+export const buildReferralLink = (referralCode, baseUrlOverride = "") => {
   const normalizedCode = normalizeReferralCode(referralCode);
   if (!normalizedCode) return "";
 
   const base =
+    baseUrlOverride ||
     process.env.REFERRAL_LINK_BASE_URL ||
     process.env.CLIENT_URL ||
     process.env.APP_URL ||
@@ -239,18 +240,29 @@ export const createPendingReferralReward = async ({
   relationship,
   planPurchase,
   resourcePurchase,
+  examAccess,
+  signupReward,
   commissionAmount,
   commissionRate,
   currency,
   metadata,
 }) => {
-  if (!relationship || (!planPurchase && !resourcePurchase)) return null;
+  if (
+    !relationship ||
+    (!planPurchase && !resourcePurchase && !examAccess && !signupReward)
+  ) {
+    return null;
+  }
   const normalizedAmount = roundCurrency(commissionAmount);
   if (normalizedAmount <= 0) return null;
 
   const existingFilter = planPurchase
     ? { planPurchaseId: planPurchase._id }
-    : { resourcePurchaseId: resourcePurchase._id };
+    : resourcePurchase
+    ? { resourcePurchaseId: resourcePurchase._id }
+    : examAccess
+    ? { examAccessId: examAccess._id }
+    : { signupRelationshipId: relationship._id };
 
   const existing = await ReferralReward.findOne(existingFilter);
   if (existing) return existing;
@@ -282,13 +294,55 @@ export const createPendingReferralReward = async ({
     payload.resourcePurchaseId = resourcePurchase._id;
   }
 
+  if (examAccess) {
+    payload.examAccessId = examAccess._id;
+  }
+
+  if (signupReward) {
+    payload.signupRelationshipId = relationship._id;
+  }
+
   return ReferralReward.create(payload);
+};
+
+export const createSignupReferralReward = async ({
+  relationship,
+  commissionAmount,
+  commissionRate = REFERRAL_DISCOUNT_RATE,
+  currency,
+}) => {
+  return createPendingReferralReward({
+    relationship,
+    signupReward: true,
+    commissionAmount,
+    commissionRate,
+    currency,
+    metadata: {
+      source: "referral_signup_bonus",
+    },
+  });
 };
 
 export const voidReferralRewardsForPlanPurchase = async ({ planPurchaseId, reason }) => {
   if (!planPurchaseId) return;
   const rewards = await ReferralReward.find({
     planPurchaseId,
+    status: { $ne: "voided" },
+  });
+
+  for (const reward of rewards) {
+    reward.status = "voided";
+    reward.voidedAt = new Date();
+    reward.voidReason = reason || "Payment not eligible";
+    reward.remainingAmount = 0;
+    await reward.save();
+  }
+};
+
+export const voidReferralRewardsForExamAccess = async ({ examAccessId, reason }) => {
+  if (!examAccessId) return;
+  const rewards = await ReferralReward.find({
+    examAccessId,
     status: { $ne: "voided" },
   });
 

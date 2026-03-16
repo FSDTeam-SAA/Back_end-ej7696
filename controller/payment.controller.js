@@ -24,6 +24,7 @@ import {
   createPendingReferralReward,
   markRelationshipDisqualified,
   runUpgradeFraudChecks,
+  voidReferralRewardsForExamAccess,
   voidReferralRewardsForPlanPurchase,
 } from "../utils/referral.service.js";
 
@@ -145,6 +146,15 @@ const getUpgradeAddonProduct = async (addonProductCodeOrId) => {
   return product;
 };
 
+const getRequestedAddonSelection = (body = {}) => {
+  const addonProductId = body?.addonProductId?.toString().trim() || "";
+  const addonProductCode = body?.addonProductCode?.toString().trim() || "";
+
+  if (addonProductId) return addonProductId;
+  if (addonProductCode) return addonProductCode;
+  return null;
+};
+
 const getActiveReferralRelationshipForUser = async (userId) => {
   if (!userId) return null;
   return ReferralRelationship.findOne({
@@ -162,6 +172,169 @@ const hasCompletedProfessionalPurchase = async (userId) => {
   return Boolean(hit);
 };
 
+const hasCompletedExamUnlockPurchase = async (userId) => {
+  if (!userId) return false;
+  const hit = await ExamAccess.exists({
+    userId,
+    purchaseType: "exam",
+    status: "unlocked",
+    paymentStatus: "completed",
+  });
+  return Boolean(hit);
+};
+
+const buildExamCheckoutContext = async ({ user, addonSelection }) => {
+  const pricing = await getPricing();
+  const examBasePrice = roundCurrency(pricing.examUnlockPrice);
+
+  const relationship = await getActiveReferralRelationshipForUser(user._id);
+  const alreadyCompletedExamUnlock = await hasCompletedExamUnlockPurchase(
+    user._id
+  );
+  const referralEligible =
+    Boolean(relationship) && !alreadyCompletedExamUnlock;
+
+  const referralDiscountAmount = referralEligible
+    ? roundCurrency(examBasePrice * REFERRAL_DISCOUNT_RATE)
+    : 0;
+  const referralDiscountRate = referralEligible ? REFERRAL_DISCOUNT_RATE : 0;
+  const examFinalPrice = roundCurrency(examBasePrice - referralDiscountAmount);
+
+  const addonProduct = await getUpgradeAddonProduct(addonSelection);
+  const addonBasePrice = addonProduct
+    ? roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0)
+    : 0;
+  const addonFinalPrice = addonProduct
+    ? roundCurrency(addonProduct.upgradeDiscountPrice ?? addonProduct.price ?? 0)
+    : 0;
+  const totalAmount = roundCurrency(examFinalPrice + addonFinalPrice);
+
+  return {
+    pricing,
+    relationship,
+    addonProduct,
+    examBasePrice,
+    referralDiscountRate,
+    referralDiscountAmount,
+    examFinalPrice,
+    addonBasePrice,
+    addonFinalPrice,
+    totalAmount,
+    referralEligible,
+    alreadyCompletedExamUnlock,
+  };
+};
+
+const unlockAddonProductFromExamAccess = async ({
+  userId,
+  addonProduct,
+  examAccess,
+  paymentFingerprint,
+}) => {
+  if (!addonProduct || !examAccess) return null;
+
+  const purchaseType = "exam_unlock_addon";
+  const basePrice = roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0);
+  const finalPrice = roundCurrency(
+    addonProduct.upgradeDiscountPrice ?? addonProduct.price ?? 0
+  );
+  const discountAmount = roundCurrency(Math.max(basePrice - finalPrice, 0));
+
+  const existingPurchase = await ResourcePurchase.findOne({
+    userId,
+    productId: addonProduct._id,
+    purchaseType,
+    "metadata.examAccessId": examAccess._id,
+  });
+  if (existingPurchase) {
+    return existingPurchase;
+  }
+
+  const resourcePurchase = await ResourcePurchase.create({
+    userId,
+    categoryId: addonProduct.categoryId,
+    productId: addonProduct._id,
+    productCode: addonProduct.code,
+    purchaseType,
+    provider: examAccess.stripePaymentIntentId ? "stripe" : "paypal",
+    status: "completed",
+    revenueTag: resolveResourceRevenueTag(purchaseType, addonProduct.code),
+    currency: examAccess.currency || addonProduct.currency || DEFAULT_CURRENCY,
+    basePrice,
+    finalPrice,
+    discountAmount,
+    stripePaymentIntentId: examAccess.stripePaymentIntentId || "",
+    paypalOrderId: examAccess.paypalOrderId || "",
+    paymentAccountFingerprint: paymentFingerprint || "",
+    metadata: {
+      source: "exam_unlock_addon",
+      examAccessId: examAccess._id,
+      examId: examAccess.examId,
+    },
+    purchasedAt: new Date(),
+  });
+
+  await applyResourceUnlocksToUser({
+    userId,
+    product: addonProduct,
+  });
+
+  return resourcePurchase;
+};
+
+const processReferralRewardForCompletedExamUnlock = async ({
+  user,
+  examAccess,
+  paymentFingerprint,
+}) => {
+  if (!user || !examAccess) return null;
+  if (!examAccess.referralRelationshipId) return null;
+  if ((examAccess.referralDiscountAmount || 0) <= 0) return null;
+
+  const relationship = await ReferralRelationship.findById(
+    examAccess.referralRelationshipId
+  );
+  if (!relationship || relationship.status !== "active") {
+    return null;
+  }
+
+  const referrer = await User.findById(relationship.referrerUserId).select(
+    "_id email activeInstallationId"
+  );
+  if (!referrer) return null;
+
+  const { fraudChecks, hasFraud } = await runUpgradeFraudChecks({
+    referredUser: user,
+    referrer,
+    paymentAccountFingerprint: paymentFingerprint,
+  });
+
+  if (hasFraud) {
+    await markRelationshipDisqualified({
+      relationship,
+      fraudChecks,
+      reason: "Referral disqualified by fraud checks",
+    });
+    return null;
+  }
+
+  relationship.upgradedAt = relationship.upgradedAt || new Date();
+  await relationship.save();
+
+  return createPendingReferralReward({
+    relationship,
+    examAccess,
+    commissionAmount: examAccess.referralDiscountAmount,
+    commissionRate:
+      examAccess.referralDiscountRate || REFERRAL_DISCOUNT_RATE,
+    currency: examAccess.currency || DEFAULT_CURRENCY,
+    metadata: {
+      source: "first_exam_unlock",
+      examId: examAccess.examId,
+    },
+  });
+};
+
 const buildProfessionalPlanCheckoutContext = async ({
   user,
   examId,
@@ -171,14 +344,8 @@ const buildProfessionalPlanCheckoutContext = async ({
   const pricing = await getPricing();
   const planBasePrice = roundCurrency(pricing.professionalPlanPrice);
 
-  const relationship = await getActiveReferralRelationshipForUser(user._id);
-  const alreadyCompletedUpgrade = await hasCompletedProfessionalPurchase(user._id);
-  const referralEligible = Boolean(relationship) && !alreadyCompletedUpgrade;
-
-  const referralDiscountAmount = referralEligible
-    ? roundCurrency(planBasePrice * REFERRAL_DISCOUNT_RATE)
-    : 0;
-  const referralDiscountRate = referralEligible ? REFERRAL_DISCOUNT_RATE : 0;
+  const referralDiscountAmount = 0;
+  const referralDiscountRate = 0;
   const planFinalPrice = roundCurrency(planBasePrice - referralDiscountAmount);
 
   const addonProduct = await getUpgradeAddonProduct(addonSelection);
@@ -212,17 +379,16 @@ const buildProfessionalPlanCheckoutContext = async ({
     addonFinalPrice,
     totalAmount,
     revenueTags,
-    referralCodeApplied: relationship?.referralCode || "",
-    referralRelationshipId: relationship?._id || null,
+    referralCodeApplied: "",
+    referralRelationshipId: null,
     metadata: {
-      referralEligible,
-      alreadyCompletedUpgrade,
+      referralEligible: false,
+      alreadyCompletedUpgrade: await hasCompletedProfessionalPurchase(user._id),
     },
   });
 
   return {
     pricing,
-    relationship,
     addonProduct,
     planPurchase,
   };
@@ -337,6 +503,19 @@ const markPlanPurchaseStatusAndRewards = async ({ planPurchase, status, reason }
   }
 };
 
+const markExamAccessStatusAndRewards = async ({ examAccess, status, reason }) => {
+  if (!examAccess) return;
+  examAccess.paymentStatus = status;
+  await examAccess.save();
+
+  if (["cancelled", "failed", "refunded", "voided"].includes(status)) {
+    await voidReferralRewardsForExamAccess({
+      examAccessId: examAccess._id,
+      reason: reason || `Payment ${status}`,
+    });
+  }
+};
+
 const addMonths = (date, months) => {
   const result = new Date(date);
   result.setMonth(result.getMonth() + months);
@@ -398,10 +577,15 @@ const getPayPalAccessToken = async () => {
 export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   const examId = req.params.examId;
+  const addonSelection = getRequestedAddonSelection(req.body);
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
 
-  const exam = await Exam.findById(examId).lean();
+  const [user, exam] = await Promise.all([
+    User.findById(userId),
+    Exam.findById(examId).lean(),
+  ]);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
   if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
 
   const existingAccess = await ExamAccess.findOne({ userId, examId });
@@ -414,10 +598,56 @@ export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
     });
   }
 
-  const pricing = await getPricing();
+  const {
+    pricing,
+    relationship,
+    addonProduct,
+    examBasePrice,
+    referralDiscountRate,
+    referralDiscountAmount,
+    examFinalPrice,
+    addonBasePrice,
+    addonFinalPrice,
+    totalAmount,
+    referralEligible,
+    alreadyCompletedExamUnlock,
+  } = await buildExamCheckoutContext({
+    user,
+    addonSelection,
+  });
+
+  const accessDoc = await ExamAccess.findOneAndUpdate(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      status: "free",
+      paymentStatus: "pending",
+      purchaseType: "exam",
+      currency: pricing.currency || DEFAULT_CURRENCY,
+      basePrice: examBasePrice,
+      purchasePrice: examFinalPrice,
+      referralDiscountRate,
+      referralDiscountAmount,
+      referralCodeApplied: relationship?.referralCode || "",
+      referralRelationshipId: relationship?._id || null,
+      addonProductId: addonProduct?._id || null,
+      addonProductCode: addonProduct?.code || "",
+      addonBasePrice,
+      addonFinalPrice,
+      totalAmount,
+      maxQuestionsPerSession: 2,
+      metadata: {
+        referralEligible,
+        alreadyCompletedExamUnlock,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
   const stripe = getStripeClient();
   const stripeCurrency = pricing.currency.toLowerCase();
-  const amount = toStripeAmount(pricing.examUnlockPrice, pricing.currency);
+  const amount = toStripeAmount(totalAmount, pricing.currency);
 
   const paymentIntent = await stripe.paymentIntents.create({
     amount,
@@ -427,22 +657,19 @@ export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
       userId: userId.toString(),
       examId: examId.toString(),
       purchaseType: "exam",
+      examAccessId: accessDoc._id.toString(),
+      referralCodeApplied: relationship?.referralCode || "",
+      addonProductCode: addonProduct?.code || "",
     },
   });
 
   await ExamAccess.findOneAndUpdate(
-    { userId, examId },
+    { _id: accessDoc._id },
     {
-      userId,
-      examId,
-      status: "free",
-      paymentStatus: "pending",
       stripePaymentIntentId: paymentIntent.id,
-      purchaseType: "exam",
-      purchasePrice: pricing.examUnlockPrice,
-      maxQuestionsPerSession: 2,
+      paypalOrderId: "",
     },
-    { upsert: true }
+    { new: true }
   );
 
   sendResponse(res, {
@@ -452,8 +679,20 @@ export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
     data: {
       paymentIntentId: paymentIntent.id,
       clientSecret: paymentIntent.client_secret,
-      amount: pricing.examUnlockPrice,
+      amount: totalAmount,
       currency: stripeCurrency,
+      breakdown: {
+        examBasePrice,
+        referralDiscountAmount,
+        examFinalPrice,
+        addonProductCode: addonProduct?.code || null,
+        addonFinalPrice,
+        totalAmount,
+      },
+      referral: {
+        applied: referralDiscountAmount > 0,
+        referralCode: relationship?.referralCode || "",
+      },
     },
   });
 });
@@ -492,10 +731,17 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
   }
 
   if (paymentIntent.status !== "succeeded") {
+    await markExamAccessStatusAndRewards({
+      examAccess: accessDoc,
+      status: "failed",
+      reason: "Stripe payment not completed",
+    });
     throw new AppError(httpStatus.BAD_GATEWAY, "Stripe payment not completed");
   }
 
-  const pricing = await getPricing();
+  const user = await User.findById(userId);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  const paymentFingerprint = buildStripePaymentAccountFingerprint(paymentIntent);
 
   const updatedAccess = await ExamAccess.findOneAndUpdate(
     { userId, examId },
@@ -506,12 +752,31 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
       paymentStatus: "completed",
       stripePaymentIntentId: paymentIntentId,
       purchaseType: "exam",
-      purchasePrice: pricing.examUnlockPrice,
       maxQuestionsPerSession: 30,
+      paymentAccountFingerprint: paymentFingerprint,
       purchasedAt: new Date(),
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+
+  let addonPurchase = null;
+  const addonSelection =
+    updatedAccess.addonProductId || updatedAccess.addonProductCode || null;
+  if (addonSelection) {
+    const addonProduct = await getUpgradeAddonProduct(addonSelection);
+    addonPurchase = await unlockAddonProductFromExamAccess({
+      userId,
+      addonProduct,
+      examAccess: updatedAccess,
+      paymentFingerprint,
+    });
+  }
+
+  await processReferralRewardForCompletedExamUnlock({
+    user,
+    examAccess: updatedAccess,
+    paymentFingerprint,
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -520,6 +785,7 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
     data: {
       unlocked: true,
       access: updatedAccess,
+      addonPurchase,
     },
   });
 });
@@ -528,8 +794,7 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
   async (req, res) => {
     const userId = req.user?._id;
     const { examId } = req.body;
-    const addonSelection =
-      req.body?.addonProductCode ?? req.body?.addonProductId ?? null;
+    const addonSelection = getRequestedAddonSelection(req.body);
 
     if (!userId) {
       throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
@@ -774,10 +1039,15 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
 export const createExamPayPalOrder = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   const examId = req.params.examId;
+  const addonSelection = getRequestedAddonSelection(req.body);
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
 
-  const exam = await Exam.findById(examId).lean();
+  const [user, exam] = await Promise.all([
+    User.findById(userId),
+    Exam.findById(examId).lean(),
+  ]);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
   if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
 
   const existingAccess = await ExamAccess.findOne({ userId, examId });
@@ -790,8 +1060,54 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
     });
   }
 
+  const {
+    pricing,
+    relationship,
+    addonProduct,
+    examBasePrice,
+    referralDiscountRate,
+    referralDiscountAmount,
+    examFinalPrice,
+    addonBasePrice,
+    addonFinalPrice,
+    totalAmount,
+    referralEligible,
+    alreadyCompletedExamUnlock,
+  } = await buildExamCheckoutContext({
+    user,
+    addonSelection,
+  });
+
+  const accessDoc = await ExamAccess.findOneAndUpdate(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      status: "free",
+      paymentStatus: "pending",
+      purchaseType: "exam",
+      currency: pricing.currency || DEFAULT_CURRENCY,
+      basePrice: examBasePrice,
+      purchasePrice: examFinalPrice,
+      referralDiscountRate,
+      referralDiscountAmount,
+      referralCodeApplied: relationship?.referralCode || "",
+      referralRelationshipId: relationship?._id || null,
+      addonProductId: addonProduct?._id || null,
+      addonProductCode: addonProduct?.code || "",
+      addonBasePrice,
+      addonFinalPrice,
+      totalAmount,
+      maxQuestionsPerSession: 2,
+      metadata: {
+        referralEligible,
+        alreadyCompletedExamUnlock,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
   const token = await getPayPalAccessToken();
-  const pricing = await getPricing();
 
   const orderRes = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders`, {
     method: "POST",
@@ -805,9 +1121,10 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
         {
           amount: {
             currency_code: pricing.currency,
-            value: pricing.examUnlockPrice.toFixed(2),
+            value: totalAmount.toFixed(2),
           },
           description: `Unlock exam: ${exam.name}`,
+          custom_id: accessDoc._id.toString(),
         },
       ],
       application_context: {
@@ -824,18 +1141,12 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
   }
 
   await ExamAccess.findOneAndUpdate(
-    { userId, examId },
+    { _id: accessDoc._id },
     {
-      userId,
-      examId,
-      status: "free",
-      paymentStatus: "pending",
       paypalOrderId: orderData.id,
-      purchaseType: "exam",
-      purchasePrice: pricing.examUnlockPrice,
-      maxQuestionsPerSession: 2,
+      stripePaymentIntentId: "",
     },
-    { upsert: true }
+    { new: true }
   );
 
   const approvalLink =
@@ -848,8 +1159,20 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
     data: {
       orderId: orderData.id,
       approvalLink,
-      amount: pricing.examUnlockPrice,
+      amount: totalAmount,
       currency: pricing.currency,
+      breakdown: {
+        examBasePrice,
+        referralDiscountAmount,
+        examFinalPrice,
+        addonProductCode: addonProduct?.code || null,
+        addonFinalPrice,
+        totalAmount,
+      },
+      referral: {
+        applied: referralDiscountAmount > 0,
+        referralCode: relationship?.referralCode || "",
+      },
     },
   });
 });
@@ -900,10 +1223,17 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
     captureData?.purchase_units?.[0]?.payments?.captures?.[0]?.status;
 
   if (!["COMPLETED"].includes(purchaseState)) {
+    await markExamAccessStatusAndRewards({
+      examAccess: accessDoc,
+      status: "failed",
+      reason: "PayPal capture not completed",
+    });
     throw new AppError(httpStatus.BAD_GATEWAY, "PayPal capture not completed");
   }
 
-  const pricing = await getPricing();
+  const user = await User.findById(userId);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  const paymentFingerprint = buildPayPalPaymentAccountFingerprint(captureData);
 
   const updatedAccess = await ExamAccess.findOneAndUpdate(
     { userId, examId },
@@ -914,12 +1244,31 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
       paymentStatus: "completed",
       paypalOrderId: orderId,
       purchaseType: "exam",
-      purchasePrice: pricing.examUnlockPrice,
       maxQuestionsPerSession: 30,
+      paymentAccountFingerprint: paymentFingerprint,
       purchasedAt: new Date(),
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+
+  let addonPurchase = null;
+  const addonSelection =
+    updatedAccess.addonProductId || updatedAccess.addonProductCode || null;
+  if (addonSelection) {
+    const addonProduct = await getUpgradeAddonProduct(addonSelection);
+    addonPurchase = await unlockAddonProductFromExamAccess({
+      userId,
+      addonProduct,
+      examAccess: updatedAccess,
+      paymentFingerprint,
+    });
+  }
+
+  await processReferralRewardForCompletedExamUnlock({
+    user,
+    examAccess: updatedAccess,
+    paymentFingerprint,
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -928,6 +1277,7 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
     data: {
       unlocked: true,
       access: updatedAccess,
+      addonPurchase,
     },
   });
 });
@@ -935,8 +1285,7 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
 export const createProfessionalPlanOrder = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   const { examId } = req.body;
-  const addonSelection =
-    req.body?.addonProductCode ?? req.body?.addonProductId ?? null;
+  const addonSelection = getRequestedAddonSelection(req.body);
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
 
@@ -1480,7 +1829,8 @@ export const getProfessionalPlan = catchAsync(async (req, res) => {
         description,
         features,
         referralOffer: {
-          discountPercent: REFERRAL_DISCOUNT_RATE * 100,
+          discountPercent: 0,
+          appliesTo: "first_exam_unlock",
         },
       },
       prePurchaseAddOnOptions: addOnOptions,

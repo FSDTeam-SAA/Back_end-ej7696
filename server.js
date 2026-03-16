@@ -263,11 +263,6 @@ const renderSharedEbookLandingPage = ({
       font-size: 12px;
       font-weight: 800;
     }
-    .cta-grid {
-      display: grid;
-      gap: 10px;
-      margin-top: 18px;
-    }
     .btn {
       appearance: none;
       border: none;
@@ -286,11 +281,6 @@ const renderSharedEbookLandingPage = ({
     .btn-primary {
       background: #10213f;
       color: #fff;
-    }
-    .btn-secondary {
-      background: #f1f5ff;
-      color: #2d4f88;
-      border: 1px solid #d7e3f3;
     }
     .helper {
       margin-top: 16px;
@@ -387,6 +377,217 @@ const renderSharedEbookLandingPage = ({
 </html>`;
 };
 
+const renderSharedReferralLandingPage = ({
+  appUrl,
+  downloadUrl,
+  referralCode,
+  referrerName,
+}) => {
+  const safeReferrerName = escapeHtml(referrerName || "an EJ user");
+  const safeReferralCode = escapeHtml(referralCode || "");
+  const safeAppUrl = escapeHtml(appUrl);
+  const safeDownloadUrl = escapeHtml(downloadUrl);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Referral Invite</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef5ff;
+      --card: #ffffff;
+      --text: #10213f;
+      --muted: #5f718a;
+      --accent: #10213f;
+      --accent-2: #2d4f88;
+      --line: #d7e3f3;
+      --success: #166534;
+      --success-bg: #e7f8ef;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(45,79,136,.16), transparent 28%),
+        linear-gradient(180deg, #f7fbff 0%, var(--bg) 100%);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .shell {
+      width: 100%;
+      max-width: 460px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      box-shadow: 0 18px 55px rgba(16,33,63,.12);
+      overflow: hidden;
+    }
+    .hero {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+      color: #fff;
+      padding: 24px;
+    }
+    .hero h1 {
+      margin: 0 0 10px;
+      font-size: 28px;
+      line-height: 1.08;
+    }
+    .hero p {
+      margin: 0;
+      color: rgba(255,255,255,.86);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+    .body { padding: 22px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--success-bg);
+      color: var(--success);
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 16px;
+    }
+    .code-box {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+      background: #f8fbff;
+      margin-bottom: 16px;
+    }
+    .code-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 8px;
+    }
+    .code-value {
+      font-size: 30px;
+      font-weight: 900;
+      letter-spacing: .06em;
+    }
+    .list {
+      margin: 0 0 18px;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .cta-grid {
+      display: grid;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .btn {
+      appearance: none;
+      border: none;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 48px;
+      border-radius: 16px;
+      font-weight: 800;
+      font-size: 14px;
+      padding: 0 16px;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: #10213f;
+      color: #fff;
+    }
+    .btn-secondary {
+      background: #f1f5ff;
+      color: #2d4f88;
+      border: 1px solid #d7e3f3;
+    }
+    .helper {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <h1>Get 10% Off Your First Exam Unlock</h1>
+      <p>${safeReferrerName} invited you to join EJ exam prep. Register in the app with this referral and your first paid exam unlock will get 10% off automatically.</p>
+    </section>
+    <section class="body">
+      <div class="badge">Referral ready from ${safeReferrerName}</div>
+      <div class="code-box">
+        <div class="code-label">Referral Code</div>
+        <div class="code-value">${safeReferralCode}</div>
+      </div>
+      <ul class="list">
+        <li>Install the app from the button below.</li>
+        <li>Register your account from the shared invite flow.</li>
+        <li>Buy your first exam unlock and the 10% discount will apply automatically.</li>
+      </ul>
+      <div style="margin-top: 18px;">
+        <a class="btn btn-primary" href="${safeAppUrl}" onclick="return openAppOrDownload();">Open in App</a>
+      </div>
+      <div class="helper">
+        If the app is already installed, tap <strong>Open in App</strong>. If the app is not installed yet, the same button will fall back to the download link. After installation, open the same invite again so the referral is passed into the app automatically.
+      </div>
+    </section>
+  </main>
+  <script>
+    function openAppOrDownload() {
+      const appUrl = ${JSON.stringify(appUrl)};
+      const downloadUrl = ${JSON.stringify(downloadUrl)};
+      if (!appUrl) {
+        if (downloadUrl) {
+          window.location.href = downloadUrl;
+        }
+        return false;
+      }
+
+      const startedAt = Date.now();
+      window.location.href = appUrl;
+
+      if (downloadUrl) {
+        setTimeout(function() {
+          const elapsed = Date.now() - startedAt;
+          if (document.visibilityState === "visible" && elapsed < 2200) {
+            window.open(downloadUrl, "_blank", "noopener,noreferrer");
+          }
+        }, 1200);
+      }
+
+      return false;
+    }
+
+    (function() {
+      const appUrl = ${JSON.stringify(appUrl)};
+      if (!appUrl) return;
+      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+      if (!isMobile) return;
+      setTimeout(function() {
+        openAppOrDownload();
+      }, 250);
+    })();
+  </script>
+</body>
+</html>`;
+};
+
 app.get("/shared-ebook", async (req, res) => {
   try {
     const referralCode = normalizeReferralCode(req.query.ref);
@@ -416,7 +617,7 @@ app.get("/shared-ebook", async (req, res) => {
       process.env.PLAY_STORE_URL ||
       process.env.REFERRAL_APP_STORE_URL ||
       process.env.APP_STORE_URL ||
-      "https://drive.google.com/file/d/1ADiA7NzrFEgR2Pp8f6rWct7JWjf1FNo9/view?usp=sharing";
+      "https://drive.google.com/file/d/12ZcZ4tDoZQuREnGPK13hVALbveHOoyxG/view?usp=sharing";
     const referrerName =
       referrer?.name ||
       [referrer?.firstName, referrer?.lastName].filter(Boolean).join(" ") ||
@@ -437,7 +638,7 @@ app.get("/shared-ebook", async (req, res) => {
   }
 });
 
-app.get("/r/:code", (req, res) => {
+app.get("/r/:code", async (req, res) => {
   const referralCode = req.params.code?.toString().trim().toUpperCase();
   if (!referralCode) {
     return res.status(400).json({
@@ -446,23 +647,45 @@ app.get("/r/:code", (req, res) => {
     });
   }
 
-  const clientUrl = process.env.CLIENT_URL?.toString().trim();
-  if (clientUrl) {
-    const referralPath =
-      process.env.REFERRAL_REDIRECT_PATH?.toString().trim() || "/register";
-    const redirectUrl = `${clientUrl.replace(/\/+$/, "")}${referralPath}?ref=${encodeURIComponent(
+  try {
+    const referrer = await User.findOne({
+      referralCode,
+      status: "active",
+    })
+      .select("name firstName lastName")
+      .lean();
+
+    if (!referrer) {
+      return res.status(404).send("Referral code not found.");
+    }
+
+    const appUrl = `ejflutter:///shared-referral?ref=${encodeURIComponent(
       referralCode
     )}`;
-    return res.redirect(302, redirectUrl);
-  }
+    const downloadUrl =
+      process.env.REFERRAL_TEST_BUILD_URL ||
+      process.env.REFERRAL_PLAY_STORE_URL ||
+      process.env.PLAY_STORE_URL ||
+      process.env.REFERRAL_APP_STORE_URL ||
+      process.env.APP_STORE_URL ||
+      "https://drive.google.com/file/d/12ZcZ4tDoZQuREnGPK13hVALbveHOoyxG/view?usp=sharing";
+    const referrerName =
+      referrer?.name ||
+      [referrer?.firstName, referrer?.lastName].filter(Boolean).join(" ") ||
+      "an EJ user";
 
-  return res.status(200).json({
-    success: true,
-    message: "Referral code captured",
-    data: {
-      referralCode,
-    },
-  });
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.status(200).send(
+      renderSharedReferralLandingPage({
+        appUrl,
+        downloadUrl,
+        referralCode,
+        referrerName,
+      })
+    );
+  } catch (error) {
+    return res.status(500).send("Unable to open referral invite right now.");
+  }
 });
 
 // Mount the main router

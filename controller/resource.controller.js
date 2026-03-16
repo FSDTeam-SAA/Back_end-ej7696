@@ -234,9 +234,50 @@ const getActiveReferralRelationshipForUser = async (userId) => {
   });
 };
 
+const normalizeReferralProductId = (value) => value?.toString().trim() || "";
+
+const ensureReferralTargetsCurrentProduct = ({ product, referralProductId }) => {
+  const normalizedReferralProductId = normalizeReferralProductId(referralProductId);
+
+  if (!normalizedReferralProductId) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Referral discount is only available from the shared ebook link"
+    );
+  }
+
+  if (normalizedReferralProductId !== product?._id?.toString()) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "This referral code only applies to the shared ebook"
+    );
+  }
+};
+
+const assertReferralCodeHasNotBeenUsedForDiscount = async ({ userId, referralCode }) => {
+  const normalizedCode = normalizeReferralCode(referralCode);
+  if (!userId || !normalizedCode) return;
+
+  const existingCompletedReferralPurchase = await ResourcePurchase.exists({
+    userId,
+    status: "completed",
+    referralCodeApplied: normalizedCode,
+    referralDiscountAmount: { $gt: 0 },
+  });
+
+  if (existingCompletedReferralPurchase) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "This referral code has already been used for a discounted ebook purchase"
+    );
+  }
+};
+
 const resolveReferralRelationshipForResourcePurchase = async ({
   user,
+  product,
   referralCode,
+  referralProductId,
 }) => {
   const normalizedCode = normalizeReferralCode(referralCode);
   const existingLinkedRelationship = await ReferralRelationship.findOne({
@@ -253,6 +294,18 @@ const resolveReferralRelationshipForResourcePurchase = async ({
       );
     }
 
+    if (normalizedCode) {
+      ensureReferralTargetsCurrentProduct({
+        product,
+        referralProductId,
+      });
+
+      await assertReferralCodeHasNotBeenUsedForDiscount({
+        userId: user?._id,
+        referralCode: normalizedCode,
+      });
+    }
+
     return existingRelationship;
   }
 
@@ -266,6 +319,16 @@ const resolveReferralRelationshipForResourcePurchase = async ({
   if (!normalizedCode) {
     return null;
   }
+
+  ensureReferralTargetsCurrentProduct({
+    product,
+    referralProductId,
+  });
+
+  await assertReferralCodeHasNotBeenUsedForDiscount({
+    userId: user?._id,
+    referralCode: normalizedCode,
+  });
 
   const referrer = await User.findOne({
     referralCode: normalizedCode,
@@ -325,6 +388,7 @@ const createPendingResourcePurchase = async ({
   provider,
   pricing,
   referralRelationship,
+  referralProductId,
 }) =>
   ResourcePurchase.create({
     userId,
@@ -348,6 +412,7 @@ const createPendingResourcePurchase = async ({
       listedPrice: pricing.listedPrice,
       catalogDiscountAmount: pricing.catalogDiscountAmount,
       referralApplied: Boolean(referralRelationship),
+      referralProductId: normalizeReferralProductId(referralProductId),
     },
   });
 
@@ -632,7 +697,9 @@ export const createResourceStripePaymentIntent = catchAsync(async (req, res) => 
 
   const referralRelationship = await resolveReferralRelationshipForResourcePurchase({
     user,
+    product,
     referralCode: req.body?.referralCode,
+    referralProductId: req.body?.referralProductId,
   });
   const pricing = getPriceForProduct(
     product,
@@ -645,6 +712,7 @@ export const createResourceStripePaymentIntent = catchAsync(async (req, res) => 
     provider: "stripe",
     pricing,
     referralRelationship,
+    referralProductId: req.body?.referralProductId,
   });
 
   const stripe = getStripeClient();
@@ -803,7 +871,9 @@ export const createResourcePayPalOrder = catchAsync(async (req, res) => {
 
   const referralRelationship = await resolveReferralRelationshipForResourcePurchase({
     user,
+    product,
     referralCode: req.body?.referralCode,
+    referralProductId: req.body?.referralProductId,
   });
   const pricing = getPriceForProduct(
     product,
@@ -847,6 +917,7 @@ export const createResourcePayPalOrder = catchAsync(async (req, res) => {
     provider: "paypal",
     pricing,
     referralRelationship,
+    referralProductId: req.body?.referralProductId,
   });
   purchase.paypalOrderId = orderData.id;
   await purchase.save();

@@ -6,8 +6,11 @@ import httpStatus from "http-status";
 import sendResponse from "../utils/sendResponse.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { User } from "./../model/user.model.js";
+import { AppSetting } from "../model/appSetting.model.js";
 import {
+  REFERRAL_DISCOUNT_RATE,
   createReferralRelationshipOnSignup,
+  createSignupReferralReward,
   generateUniqueReferralCode,
   normalizeReferralCode,
   validateReferralAtSignup,
@@ -18,6 +21,8 @@ const createSessionId = () =>
 
 const INSTALLATION_HEADER_KEY = "x-app-installation-id";
 const FALLBACK_INSTALLATION_HEADER_KEY = "x-installation-id";
+const DEFAULT_EXAM_PRICE = Number(process.env.EXAM_PRICE_PER_EXAM) || 150;
+const DEFAULT_CURRENCY = process.env.EXAM_PRICE_CURRENCY || "USD";
 
 const normalizeInstallationId = (installationId) =>
   installationId?.toString().trim() || "";
@@ -135,11 +140,27 @@ export const register = catchAsync(async (req, res) => {
   await user.save();
 
   if (referrer) {
-    await createReferralRelationshipOnSignup({
+    const relationship = await createReferralRelationshipOnSignup({
       referrer,
       referredUser: user,
       referralCode: referrer.referralCode,
     });
+
+    if (relationship) {
+      const settings = await AppSetting.findOne().lean();
+      const examUnlockPrice = Number(settings?.examUnlockPrice ?? DEFAULT_EXAM_PRICE);
+      const currency = settings?.currency || DEFAULT_CURRENCY;
+      const commissionAmount = Math.round(
+        (examUnlockPrice * REFERRAL_DISCOUNT_RATE + Number.EPSILON) * 100
+      ) / 100;
+
+      await createSignupReferralReward({
+        relationship,
+        commissionAmount,
+        commissionRate: REFERRAL_DISCOUNT_RATE,
+        currency,
+      });
+    }
   }
 
   user.accessToken = accessToken;
