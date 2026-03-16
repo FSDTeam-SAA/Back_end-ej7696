@@ -1,4 +1,5 @@
 import httpStatus from "http-status";
+import mongoose from "mongoose";
 import Stripe from "stripe";
 import AppError from "../errors/AppError.js";
 import catchAsync from "../utils/catchAsync.js";
@@ -62,11 +63,24 @@ const parseBoolean = (value, fallback = false) => {
   return fallback;
 };
 
+const normalizeBundleIncludeItem = (value) => {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    return normalizeProductCode(value);
+  }
+  if (typeof value === "object") {
+    return normalizeProductCode(
+      value.code ?? value.productCode ?? value.id ?? value._id ?? ""
+    );
+  }
+  return "";
+};
+
 const parseBundleIncludes = (value) => {
   if (value === undefined || value === null || value === "") return [];
 
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeProductCode(item)).filter(Boolean);
+    return [...new Set(value.map((item) => normalizeBundleIncludeItem(item)).filter(Boolean))];
   }
 
   if (typeof value === "string") {
@@ -76,19 +90,144 @@ const parseBundleIncludes = (value) => {
     try {
       const parsed = JSON.parse(trimmed);
       if (Array.isArray(parsed)) {
-        return parsed.map((item) => normalizeProductCode(item)).filter(Boolean);
+        return [
+          ...new Set(parsed.map((item) => normalizeBundleIncludeItem(item)).filter(Boolean)),
+        ];
       }
     } catch (_err) {
       // Fallback to comma-separated values
     }
 
-    return trimmed
-      .split(",")
-      .map((item) => normalizeProductCode(item))
-      .filter(Boolean);
+    return [...new Set(trimmed.split(",").map((item) => normalizeProductCode(item)).filter(Boolean))];
   }
 
   return [];
+};
+
+const buildProductCodeSeed = (value) =>
+  value
+    ?.toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+
+const resolveUniqueProductCode = async ({ rawCode, title, excludeProductId = null }) => {
+  const explicitCode = normalizeProductCode(rawCode);
+  const titleSeed = buildProductCodeSeed(title);
+  const baseCode =
+    explicitCode ||
+    titleSeed ||
+    `ebook_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+  let candidate = baseCode;
+  let suffix = 2;
+
+  while (true) {
+    const existing = await ResourceProduct.findOne({ code: candidate })
+      .select("_id")
+      .lean();
+    if (
+      !existing ||
+      (excludeProductId && existing._id.toString() === excludeProductId.toString())
+    ) {
+      return candidate;
+    }
+    candidate = `${baseCode}_${suffix}`;
+    suffix += 1;
+  }
+};
+
+const resolveBundleIncludesForProduct = async ({
+  bundleIncludes = [],
+  isBundle = false,
+  currentProductId = null,
+}) => {
+  const normalizedTokens = [...new Set(parseBundleIncludes(bundleIncludes))];
+
+  if (!isBundle) {
+    return [];
+  }
+
+  if (normalizedTokens.length < 2) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Bundle must include at least two ebooks"
+    );
+  }
+
+  const objectIdTokens = normalizedTokens.filter((item) =>
+    mongoose.Types.ObjectId.isValid(item)
+  );
+
+  const products = await ResourceProduct.find({
+    $or: [
+      { code: { $in: normalizedTokens } },
+      ...(objectIdTokens.length ? [{ _id: { $in: objectIdTokens } }] : []),
+    ],
+  })
+    .select("_id code title isBundle isActive")
+    .lean();
+
+  const productByCode = new Map(
+    products.map((item) => [normalizeProductCode(item.code), item])
+  );
+  const productById = new Map(products.map((item) => [item._id.toString(), item]));
+
+  const unresolvedTokens = [];
+  const resolvedCodes = new Set();
+  const currentId = currentProductId?.toString() || "";
+
+  normalizedTokens.forEach((token) => {
+    const byCode = productByCode.get(token);
+    const byId = mongoose.Types.ObjectId.isValid(token) ? productById.get(token) : null;
+    const matched = byCode || byId;
+
+    if (!matched) {
+      unresolvedTokens.push(token);
+      return;
+    }
+
+    if (currentId && matched._id.toString() === currentId) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "A bundle cannot include itself"
+      );
+    }
+
+    if (matched.isBundle) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "Nested bundles are not allowed"
+      );
+    }
+
+    if (!matched.isActive) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        `Included ebook is inactive: ${matched.title || matched.code}`
+      );
+    }
+
+    resolvedCodes.add(normalizeProductCode(matched.code));
+  });
+
+  if (unresolvedTokens.length > 0) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Invalid bundle includes: ${unresolvedTokens.join(", ")}`
+    );
+  }
+
+  if (resolvedCodes.size < 2) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Bundle must include at least two valid ebooks"
+    );
+  }
+
+  return [...resolvedCodes];
 };
 
 const getUploadedFile = (req, fieldName) => {
@@ -470,9 +609,45 @@ const processReferralRewardForCompletedResourcePurchase = async ({
   });
 };
 
-const buildProductCard = ({ product, unlockedCodes }) => {
+const buildProductCard = ({ product, unlockedCodes, productByCode }) => {
   const code = normalizeProductCode(product?.code);
   const isUnlocked = unlockedCodes.has(code);
+  const bundleIncludes = parseBundleIncludes(product?.bundleIncludes);
+  const bundleItems = bundleIncludes
+    .map((itemCode) => productByCode.get(itemCode))
+    .filter(Boolean)
+    .map((item) => {
+      const itemCode = normalizeProductCode(item.code);
+      const itemUnlocked = unlockedCodes.has(itemCode);
+
+      return {
+        id: item._id,
+        categoryId: item.categoryId,
+        code: itemCode,
+        title: item.title,
+        shortDescription: item.shortDescription || "",
+        fullDescription: item.fullDescription || "",
+        coverImageUrl: item.coverImageUrl || "",
+        contentUrl: itemUnlocked ? item.contentUrl || "" : "",
+        previewAvailable: Boolean(item.previewAvailable),
+        previewTitle: item.previewTitle || "",
+        previewContent: item.previewAvailable ? item.previewContent || "" : "",
+        previewUrl: item.previewAvailable ? item.previewUrl || "" : "",
+        pricing: {
+          current: item.price,
+          original: item.originalPrice ?? item.price,
+          upgradeDiscount: item.upgradeDiscountPrice ?? item.price,
+          currency: item.currency || "USD",
+        },
+        isBundle: Boolean(item.isBundle),
+        bundleIncludes: parseBundleIncludes(item.bundleIncludes),
+        locked: !itemUnlocked,
+        unlocked: itemUnlocked,
+        purchaseState: itemUnlocked ? "purchased" : "locked",
+        sortOrder: item.sortOrder || 0,
+        isActive: Boolean(item.isActive),
+      };
+    });
 
   return {
     id: product._id,
@@ -494,7 +669,8 @@ const buildProductCard = ({ product, unlockedCodes }) => {
       currency: product.currency || "USD",
     },
     isBundle: Boolean(product.isBundle),
-    bundleIncludes: product.bundleIncludes || [],
+    bundleIncludes,
+    bundleItems,
     locked: !isUnlocked,
     unlocked: isUnlocked,
     purchaseState: isUnlocked ? "purchased" : "locked",
@@ -509,10 +685,19 @@ const getUserResourceAccess = (user) => ({
   resourceUnlocks: user?.resourceUnlocks || [],
 });
 
-const fetchResourceStorePayload = async (userId) => {
+const fetchResourceStorePayload = async (userId, categoryId = "") => {
+  const normalizedCategoryId = categoryId?.toString().trim() || "";
+  const categoryFilter = { isActive: true };
+  const productFilter = { isActive: true };
+
+  if (normalizedCategoryId) {
+    categoryFilter._id = normalizedCategoryId;
+    productFilter.categoryId = normalizedCategoryId;
+  }
+
   const [categories, products, user] = await Promise.all([
-    ResourceCategory.find({ isActive: true }).sort({ sortOrder: 1, createdAt: 1 }).lean(),
-    ResourceProduct.find({ isActive: true }).sort({ sortOrder: 1, createdAt: 1 }).lean(),
+    ResourceCategory.find(categoryFilter).sort({ sortOrder: 1, createdAt: 1 }).lean(),
+    ResourceProduct.find(productFilter).sort({ sortOrder: 1, createdAt: 1 }).lean(),
     User.findById(userId)
       .select(
         "has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks"
@@ -521,11 +706,14 @@ const fetchResourceStorePayload = async (userId) => {
   ]);
 
   const unlockedCodes = getUnlockedResourceCodeSet(user || {});
+  const productByCode = new Map(
+    products.map((item) => [normalizeProductCode(item?.code), item])
+  );
 
   const productsByCategory = products.reduce((acc, product) => {
     const key = product.categoryId.toString();
     if (!acc[key]) acc[key] = [];
-    acc[key].push(buildProductCard({ product, unlockedCodes }));
+    acc[key].push(buildProductCard({ product, unlockedCodes, productByCode }));
     return acc;
   }, {});
 
@@ -550,8 +738,12 @@ export const listResourceStore = catchAsync(async (req, res) => {
   if (!userId) {
     throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   }
+  const categoryId = req.query?.categoryId?.toString().trim() || "";
+  if (categoryId && !mongoose.Types.ObjectId.isValid(categoryId)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid categoryId");
+  }
 
-  const payload = await fetchResourceStorePayload(userId);
+  const payload = await fetchResourceStorePayload(userId, categoryId);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -1220,13 +1412,12 @@ export const listResourcePurchasesAdmin = catchAsync(async (req, res) => {
 
 export const createResourceProductAdmin = catchAsync(async (req, res) => {
   const categoryId = req.body?.categoryId;
-  const code = normalizeProductCode(req.body?.code);
   const title = req.body?.title?.toString().trim();
 
-  if (!categoryId || !code || !title) {
+  if (!categoryId || !title) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      "categoryId, code, and title are required"
+      "categoryId and title are required"
     );
   }
 
@@ -1235,10 +1426,10 @@ export const createResourceProductAdmin = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "Category not found");
   }
 
-  const codeExists = await ResourceProduct.findOne({ code });
-  if (codeExists) {
-    throw new AppError(httpStatus.BAD_REQUEST, "Product code already exists");
-  }
+  const code = await resolveUniqueProductCode({
+    rawCode: req.body?.code,
+    title,
+  });
 
   const price = Number(req.body?.price);
   if (Number.isNaN(price) || price < 0) {
@@ -1260,6 +1451,13 @@ export const createResourceProductAdmin = catchAsync(async (req, res) => {
   const contentUrl = uploadedAssets.contentUrl
     ? uploadedAssets.contentUrl
     : req.body?.contentUrl?.toString().trim() || "";
+  const requestedIsBundle = parseBoolean(req.body?.isBundle, false);
+  const requestedBundleIncludes = parseBundleIncludes(req.body?.bundleIncludes);
+  const isBundle = requestedIsBundle || requestedBundleIncludes.length > 0;
+  const bundleIncludes = await resolveBundleIncludesForProduct({
+    bundleIncludes: requestedBundleIncludes,
+    isBundle,
+  });
 
   const product = await ResourceProduct.create({
     categoryId,
@@ -1273,8 +1471,8 @@ export const createResourceProductAdmin = catchAsync(async (req, res) => {
     originalPrice,
     upgradeDiscountPrice,
     currency: req.body?.currency?.toString().trim().toUpperCase() || "USD",
-    isBundle: parseBoolean(req.body?.isBundle, false),
-    bundleIncludes: parseBundleIncludes(req.body?.bundleIncludes),
+    isBundle,
+    bundleIncludes,
     previewAvailable: parseBoolean(req.body?.previewAvailable, true),
     previewTitle: req.body?.previewTitle?.toString().trim() || "Introduction",
     previewContent: req.body?.previewContent?.toString().trim() || "",
@@ -1307,15 +1505,15 @@ export const updateResourceProductAdmin = catchAsync(async (req, res) => {
   }
 
   if (req.body?.code !== undefined) {
-    const code = normalizeProductCode(req.body.code);
-    if (!code) {
+    const requestedCode = req.body.code?.toString().trim();
+    if (!requestedCode) {
       throw new AppError(httpStatus.BAD_REQUEST, "code cannot be empty");
     }
-    const exists = await ResourceProduct.findOne({ code });
-    if (exists && exists._id.toString() !== product._id.toString()) {
-      throw new AppError(httpStatus.BAD_REQUEST, "Product code already exists");
-    }
-    product.code = code;
+    product.code = await resolveUniqueProductCode({
+      rawCode: requestedCode,
+      title: req.body?.title ?? product.title,
+      excludeProductId: product._id,
+    });
   }
 
   const editableTextFields = [
@@ -1378,12 +1576,33 @@ export const updateResourceProductAdmin = catchAsync(async (req, res) => {
     }
   }
 
-  if (req.body?.isBundle !== undefined) {
-    product.isBundle = parseBoolean(req.body.isBundle, product.isBundle);
-  }
+  const hasBundleFlagUpdate = req.body?.isBundle !== undefined;
+  const hasBundleIncludesUpdate = req.body?.bundleIncludes !== undefined;
+  if (hasBundleFlagUpdate || hasBundleIncludesUpdate) {
+    const requestedIsBundle = hasBundleFlagUpdate
+      ? parseBoolean(req.body?.isBundle, product.isBundle)
+      : product.isBundle;
+    const requestedBundleIncludes = hasBundleIncludesUpdate
+      ? parseBundleIncludes(req.body?.bundleIncludes)
+      : parseBundleIncludes(product.bundleIncludes);
 
-  if (req.body?.bundleIncludes !== undefined) {
-    product.bundleIncludes = parseBundleIncludes(req.body.bundleIncludes);
+    let nextIsBundle = requestedIsBundle;
+    if (hasBundleIncludesUpdate) {
+      if (requestedBundleIncludes.length > 0) {
+        nextIsBundle = true;
+      } else if (!hasBundleFlagUpdate) {
+        nextIsBundle = false;
+      }
+    }
+
+    product.bundleIncludes = await resolveBundleIncludesForProduct({
+      bundleIncludes: requestedBundleIncludes,
+      isBundle: nextIsBundle,
+      currentProductId: product._id,
+    });
+    product.isBundle = nextIsBundle;
+  } else if (!product.isBundle) {
+    product.bundleIncludes = [];
   }
 
   if (req.body?.previewAvailable !== undefined) {
