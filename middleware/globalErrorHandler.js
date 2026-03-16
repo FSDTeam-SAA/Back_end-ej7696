@@ -4,7 +4,10 @@ import handleDuplicateError from "../errors/handleDuplicateError.js";
 import AppError from "./../errors/AppError.js";
 
 const globalErrorHandler = (err, req, res, next) => {
-  console.log({ GlobalError: err });
+  const isExpectedClientError = err instanceof AppError && err?.statusCode < 500;
+  if (!isExpectedClientError) {
+    console.error({ GlobalError: err });
+  }
   let statusCode = 500;
   let message = err.message;
   let errorSources = [

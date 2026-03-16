@@ -24,25 +24,21 @@ const referralRewardSchema = new Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "ProfessionalPlanPurchase",
       default: null,
-      index: true,
     },
     resourcePurchaseId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ResourcePurchase",
       default: null,
-      index: true,
     },
     examAccessId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ExamAccess",
       default: null,
-      index: true,
     },
     signupRelationshipId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ReferralRelationship",
       default: null,
-      index: true,
     },
     currency: {
       type: String,
