@@ -32,6 +32,18 @@ const referralRewardSchema = new Schema(
       default: null,
       index: true,
     },
+    examAccessId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ExamAccess",
+      default: null,
+      index: true,
+    },
+    signupRelationshipId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ReferralRelationship",
+      default: null,
+      index: true,
+    },
     currency: {
       type: String,
       trim: true,
@@ -94,5 +106,7 @@ const referralRewardSchema = new Schema(
 referralRewardSchema.index({ referrerUserId: 1, status: 1, pendingUntil: 1 });
 referralRewardSchema.index({ planPurchaseId: 1 }, { unique: true, sparse: true });
 referralRewardSchema.index({ resourcePurchaseId: 1 }, { unique: true, sparse: true });
+referralRewardSchema.index({ examAccessId: 1 }, { unique: true, sparse: true });
+referralRewardSchema.index({ signupRelationshipId: 1 }, { unique: true, sparse: true });
 
 export const ReferralReward = mongoose.model("ReferralReward", referralRewardSchema);

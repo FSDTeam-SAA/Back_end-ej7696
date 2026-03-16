@@ -28,7 +28,13 @@ const resourcePurchaseSchema = new Schema(
     },
     purchaseType: {
       type: String,
-      enum: ["single", "bundle", "professional_upgrade_addon", "manual"],
+      enum: [
+        "single",
+        "bundle",
+        "professional_upgrade_addon",
+        "exam_unlock_addon",
+        "manual",
+      ],
       default: "single",
     },
     provider: {

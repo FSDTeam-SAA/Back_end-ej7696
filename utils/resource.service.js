@@ -126,8 +126,15 @@ export const applyResourceUnlocksToUser = async ({ userId, product }) => {
 
 export const resolveResourceRevenueTag = (purchaseType, productCode) => {
   const code = normalizeProductCode(productCode);
-  if (purchaseType === "professional_upgrade_addon") {
-    return `pro_upgrade_addon:${code}`;
+  if (
+    purchaseType === "professional_upgrade_addon" ||
+    purchaseType === "exam_unlock_addon"
+  ) {
+    const prefix =
+      purchaseType === "professional_upgrade_addon"
+        ? "pro_upgrade_addon"
+        : "exam_unlock_addon";
+    return `${prefix}:${code}`;
   }
   if (code === RESOURCE_PRODUCT_CODES.API510_BUNDLE) {
     return "ebook_bundle";

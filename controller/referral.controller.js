@@ -24,7 +24,7 @@ import {
 
 const REFERRAL_PROGRAM_HEADLINE = "Help Your Friend Pass Their Certification";
 const REFERRAL_PROGRAM_DESCRIPTION =
-  "Invite someone preparing for API certification exams. If they upgrade using your referral code, you earn 10% commission and they get 10% discount.";
+  "Invite someone preparing for API certification exams. If they register using your referral code, they get 10% off their first exam unlock and you earn a 10% commission signup reward.";
 const REFERRAL_SHARE_CHANNELS = [
   "copy_link",
   "whatsapp",
@@ -50,7 +50,7 @@ const buildReferralShareMessage = ({ referralCode, referralLink }) => {
     "",
     `Use my referral code and get ${Math.round(
       REFERRAL_DISCOUNT_RATE * 100
-    )}% off the Professional Plan.`,
+    )}% off your first exam unlock. When you register, I also get a 10% referral commission bonus.`,
   ];
 
   if (appStoreLink) {
@@ -84,6 +84,33 @@ const buildReferralActionPayload = (summary) => ({
   minimumCashPayout: CASH_PAYOUT_MIN_BALANCE,
 });
 
+const resolveRequestBaseUrl = (req) => {
+  const configuredBase =
+    process.env.REFERRAL_LINK_BASE_URL ||
+    process.env.CLIENT_URL ||
+    process.env.APP_URL ||
+    "";
+
+  const normalizedConfiguredBase = configuredBase.trim();
+  if (
+    normalizedConfiguredBase &&
+    !/localhost|127\.0\.0\.1/i.test(normalizedConfiguredBase)
+  ) {
+    return normalizedConfiguredBase;
+  }
+
+  const host = req.get("x-forwarded-host") || req.get("host") || "";
+  if (!host) {
+    return normalizedConfiguredBase;
+  }
+
+  const protocol =
+    req.get("x-forwarded-proto") ||
+    (req.secure ? "https" : req.protocol || "http");
+
+  return `${protocol}://${host}`;
+};
+
 const ensureUserReferralIdentity = async (userId) => {
   const user = await User.findById(userId).select("referralCode appCreditBalance");
   if (!user) {
@@ -106,7 +133,10 @@ export const getMyReferralProfile = catchAsync(async (req, res) => {
 
   const user = await ensureUserReferralIdentity(userId);
   const summary = await getReferralSummary(userId);
-  const referralLink = buildReferralLink(user.referralCode);
+  const referralLink = buildReferralLink(
+    user.referralCode,
+    resolveRequestBaseUrl(req)
+  );
   const program = buildReferralProgramPayload({
     referralCode: user.referralCode,
     referralLink,
@@ -134,7 +164,10 @@ export const getMyReferralProgram = catchAsync(async (req, res) => {
   }
 
   const user = await ensureUserReferralIdentity(userId);
-  const referralLink = buildReferralLink(user.referralCode);
+  const referralLink = buildReferralLink(
+    user.referralCode,
+    resolveRequestBaseUrl(req)
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -173,7 +206,10 @@ export const getPublicReferralCode = catchAsync(async (req, res) => {
     message: "Referral code is valid",
     data: {
       referralCode: referrer.referralCode,
-      referralLink: buildReferralLink(referrer.referralCode),
+      referralLink: buildReferralLink(
+        referrer.referralCode,
+        resolveRequestBaseUrl(req)
+      ),
       referrerName,
       discountPercent: 10,
     },
