@@ -29,6 +29,14 @@ app.set("io", io);
 const normalizeOrigin = (origin) =>
   origin?.toString().trim().replace(/\/+$/, "");
 
+const normalizeHost = (host) =>
+  host
+    ?.toString()
+    .trim()
+    .split(",")[0]
+    ?.replace(/^https?:\/\//i, "")
+    .replace(/\/+$/, "");
+
 const defaultAllowedOrigins = [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
@@ -40,11 +48,22 @@ const allowedOrigins = new Set(
   [
     ...defaultAllowedOrigins,
     process.env.CLIENT_URL,
+    process.env.APP_URL,
+    process.env.REFERRAL_LINK_BASE_URL,
     ...(process.env.CORS_ALLOWED_ORIGINS || "").split(","),
   ]
     .map(normalizeOrigin)
     .filter(Boolean)
 );
+
+const sameHostFrontendPorts = new Set(
+  (process.env.CORS_SAME_HOST_FRONTEND_PORTS || "3000")
+    .split(",")
+    .map((port) => port.trim())
+    .filter(Boolean)
+);
+
+const getDefaultPort = (protocol) => (protocol === "https:" ? "443" : "80");
 
 const isTrustedDevOrigin = (origin) => {
   if ((process.env.NODE_ENV || "development") === "production") return false;
@@ -66,7 +85,27 @@ const isTrustedDevOrigin = (origin) => {
   }
 };
 
-const corsOptions = {
+const isSameHostFrontendOrigin = (origin, requestHost) => {
+  const normalizedHost = normalizeHost(requestHost);
+  if (!normalizedHost) return false;
+
+  try {
+    const parsedOrigin = new URL(origin);
+    const parsedHost = new URL(`http://${normalizedHost}`);
+    const originPort =
+      parsedOrigin.port || getDefaultPort(parsedOrigin.protocol);
+
+    return (
+      ["http:", "https:"].includes(parsedOrigin.protocol) &&
+      parsedOrigin.hostname === parsedHost.hostname &&
+      sameHostFrontendPorts.has(originPort)
+    );
+  } catch {
+    return false;
+  }
+};
+
+const buildCorsOptions = (requestHost) => ({
   origin: (origin, callback) => {
     const cleanedOrigin = normalizeOrigin(origin);
 
@@ -76,7 +115,8 @@ const corsOptions = {
 
     if (
       allowedOrigins.has(cleanedOrigin) ||
-      isTrustedDevOrigin(cleanedOrigin)
+      isTrustedDevOrigin(cleanedOrigin) ||
+      isSameHostFrontendOrigin(cleanedOrigin, requestHost)
     ) {
       return callback(null, true);
     }
@@ -91,10 +131,14 @@ const corsOptions = {
     "x-app-installation-id",
     "x-installation-id",
   ],
+});
+
+const corsOptionsDelegate = (req, callback) => {
+  callback(null, buildCorsOptions(req.get("host")));
 };
 
-app.use(cors(corsOptions));
-app.options("/{*any}", cors(corsOptions));
+app.use(cors(corsOptionsDelegate));
+app.options("/{*any}", cors(corsOptionsDelegate));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
