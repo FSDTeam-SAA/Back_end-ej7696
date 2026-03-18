@@ -8,7 +8,6 @@ import { User } from "../model/user.model.js";
 import { ResourceCategory } from "../model/resourceCategory.model.js";
 import { ResourceProduct } from "../model/resourceProduct.model.js";
 import { ResourcePurchase } from "../model/resourcePurchase.model.js";
-import { ReferralRelationship } from "../model/referralRelationship.model.js";
 import {
   applyResourceUnlocksToUser,
   getResourceProductOrThrow,
@@ -20,14 +19,6 @@ import {
   roundCurrency,
 } from "../utils/resource.service.js";
 import { uploadOnCloudinary } from "../utils/commonMethod.js";
-import {
-  REFERRAL_DISCOUNT_RATE,
-  createPendingReferralReward,
-  createReferralRelationshipOnSignup,
-  markRelationshipDisqualified,
-  normalizeReferralCode,
-  runUpgradeFraudChecks,
-} from "../utils/referral.service.js";
 
 const PAYPAL_BASE_URL =
   process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com";
@@ -330,29 +321,22 @@ const buildPaymentAccountFingerprintFromPayPalCapture = (captureData) => {
 const getPurchaseType = (product) => (product?.isBundle ? "bundle" : "single");
 
 const RESOURCE_PURCHASE_USER_SELECT =
-  "email activeInstallationId referredBy referredByCode referredAt has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks";
+  "email has_api510_inspection_guide has_api510_report_guide has_api510_bundle resourceUnlocks";
 
-const getPriceForProduct = (product, referralDiscountRate = 0) => {
+const getPriceForProduct = (product) => {
   const listedPrice = roundCurrency(product?.price || 0);
   const basePrice = roundCurrency(product?.originalPrice ?? product?.price ?? 0);
+  const finalPrice = listedPrice;
   const catalogDiscountAmount = roundCurrency(Math.max(basePrice - listedPrice, 0));
-  const safeReferralRate = Math.max(
-    0,
-    Math.min(Number(referralDiscountRate || 0), REFERRAL_DISCOUNT_RATE)
-  );
-  const referralDiscountAmount = roundCurrency(listedPrice * safeReferralRate);
-  const finalPrice = roundCurrency(Math.max(listedPrice - referralDiscountAmount, 0));
-  const discountAmount = roundCurrency(
-    Math.max(basePrice - finalPrice, 0)
-  );
+  const discountAmount = catalogDiscountAmount;
 
   return {
     basePrice,
     listedPrice,
     finalPrice,
     catalogDiscountAmount,
-    referralDiscountRate: safeReferralRate,
-    referralDiscountAmount,
+    referralDiscountRate: 0,
+    referralDiscountAmount: 0,
     discountAmount,
   };
 };
@@ -365,169 +349,11 @@ const getResourceCheckoutUserOrThrow = async (userId) => {
   return user;
 };
 
-const getActiveReferralRelationshipForUser = async (userId) => {
-  if (!userId) return null;
-  return ReferralRelationship.findOne({
-    referredUserId: userId,
-    status: "active",
-  });
-};
-
-const normalizeReferralProductId = (value) => value?.toString().trim() || "";
-
-const ensureReferralTargetsCurrentProduct = ({ product, referralProductId }) => {
-  const normalizedReferralProductId = normalizeReferralProductId(referralProductId);
-
-  if (!normalizedReferralProductId) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "Referral discount is only available from the shared ebook link"
-    );
-  }
-
-  if (normalizedReferralProductId !== product?._id?.toString()) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "This referral code only applies to the shared ebook"
-    );
-  }
-};
-
-const assertReferralCodeHasNotBeenUsedForDiscount = async ({ userId, referralCode }) => {
-  const normalizedCode = normalizeReferralCode(referralCode);
-  if (!userId || !normalizedCode) return;
-
-  const existingCompletedReferralPurchase = await ResourcePurchase.exists({
-    userId,
-    status: "completed",
-    referralCodeApplied: normalizedCode,
-    referralDiscountAmount: { $gt: 0 },
-  });
-
-  if (existingCompletedReferralPurchase) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "This referral code has already been used for a discounted ebook purchase"
-    );
-  }
-};
-
-const resolveReferralRelationshipForResourcePurchase = async ({
-  user,
-  product,
-  referralCode,
-  referralProductId,
-}) => {
-  const normalizedCode = normalizeReferralCode(referralCode);
-  const existingLinkedRelationship = await ReferralRelationship.findOne({
-    referredUserId: user?._id,
-  });
-  const existingRelationship =
-    existingLinkedRelationship?.status === "active" ? existingLinkedRelationship : null;
-
-  if (existingRelationship) {
-    if (normalizedCode && existingRelationship.referralCode !== normalizedCode) {
-      throw new AppError(
-        httpStatus.BAD_REQUEST,
-        "Another referral code is already linked to this account"
-      );
-    }
-
-    if (normalizedCode) {
-      ensureReferralTargetsCurrentProduct({
-        product,
-        referralProductId,
-      });
-
-      await assertReferralCodeHasNotBeenUsedForDiscount({
-        userId: user?._id,
-        referralCode: normalizedCode,
-      });
-    }
-
-    return existingRelationship;
-  }
-
-  if (existingLinkedRelationship) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "This account already has a referral relationship"
-    );
-  }
-
-  if (!normalizedCode) {
-    return null;
-  }
-
-  ensureReferralTargetsCurrentProduct({
-    product,
-    referralProductId,
-  });
-
-  await assertReferralCodeHasNotBeenUsedForDiscount({
-    userId: user?._id,
-    referralCode: normalizedCode,
-  });
-
-  const referrer = await User.findOne({
-    referralCode: normalizedCode,
-    status: "active",
-  }).select("_id email activeInstallationId referralCode");
-
-  if (!referrer) {
-    throw new AppError(httpStatus.BAD_REQUEST, "Referral code is invalid");
-  }
-
-  if (referrer._id.toString() === user._id.toString()) {
-    throw new AppError(httpStatus.BAD_REQUEST, "You cannot use your own referral code");
-  }
-
-  const referredEmail = user.email?.toString().trim().toLowerCase() || "";
-  const referrerEmail = referrer.email?.toString().trim().toLowerCase() || "";
-  if (referredEmail && referrerEmail && referredEmail === referrerEmail) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "Referral code cannot be used for this account"
-    );
-  }
-
-  const referredInstallation = user.activeInstallationId?.toString().trim() || "";
-  const referrerInstallation =
-    referrer.activeInstallationId?.toString().trim() || "";
-  if (
-    referredInstallation &&
-    referrerInstallation &&
-    referredInstallation === referrerInstallation
-  ) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "Referral code cannot be used for this account"
-    );
-  }
-
-  const relationship = await createReferralRelationshipOnSignup({
-    referrer,
-    referredUser: user,
-    referralCode: referrer.referralCode,
-  });
-
-  if (!user.referredBy || !user.referredByCode || !user.referredAt) {
-    user.referredBy = user.referredBy || referrer._id;
-    user.referredByCode = user.referredByCode || referrer.referralCode;
-    user.referredAt = user.referredAt || new Date();
-    await user.save();
-  }
-
-  return relationship;
-};
-
 const createPendingResourcePurchase = async ({
   userId,
   product,
   provider,
   pricing,
-  referralRelationship,
-  referralProductId,
 }) =>
   ResourcePurchase.create({
     userId,
@@ -544,70 +370,16 @@ const createPendingResourcePurchase = async ({
     referralDiscountRate: pricing.referralDiscountRate,
     referralDiscountAmount: pricing.referralDiscountAmount,
     discountAmount: pricing.discountAmount,
-    referralCodeApplied: referralRelationship?.referralCode || "",
-    referralRelationshipId: referralRelationship?._id || null,
+    referralCodeApplied: "",
+    referralRelationshipId: null,
     metadata: {
       flow: "resource_store",
       listedPrice: pricing.listedPrice,
       catalogDiscountAmount: pricing.catalogDiscountAmount,
-      referralApplied: Boolean(referralRelationship),
-      referralProductId: normalizeReferralProductId(referralProductId),
+      referralApplied: false,
+      referralProductId: "",
     },
   });
-
-const processReferralRewardForCompletedResourcePurchase = async ({
-  user,
-  purchase,
-  product,
-  paymentFingerprint,
-}) => {
-  if (!purchase?.referralRelationshipId) return null;
-  if ((purchase.referralDiscountAmount || 0) <= 0) return null;
-
-  const relationship = await ReferralRelationship.findById(
-    purchase.referralRelationshipId
-  );
-  if (!relationship || relationship.status !== "active") {
-    return null;
-  }
-
-  const referrer = await User.findById(relationship.referrerUserId).select(
-    "_id email activeInstallationId"
-  );
-  if (!referrer) return null;
-
-  const { fraudChecks, hasFraud } = await runUpgradeFraudChecks({
-    referredUser: user,
-    referrer,
-    paymentAccountFingerprint: paymentFingerprint,
-  });
-
-  if (hasFraud) {
-    await markRelationshipDisqualified({
-      relationship,
-      fraudChecks,
-      reason: "Referral disqualified by fraud checks",
-    });
-    return null;
-  }
-
-  relationship.upgradedAt = relationship.upgradedAt || new Date();
-  await relationship.save();
-
-  return createPendingReferralReward({
-    relationship,
-    resourcePurchase: purchase,
-    commissionAmount: purchase.referralDiscountAmount,
-    commissionRate: purchase.referralDiscountRate || REFERRAL_DISCOUNT_RATE,
-    currency: purchase.currency || product?.currency || "USD",
-    metadata: {
-      source: "resource_purchase",
-      productCode: product?.code || purchase.productCode,
-      productId: product?._id?.toString() || purchase.productId?.toString() || "",
-      productTitle: product?.title || "",
-    },
-  });
-};
 
 const buildProductCard = ({ product, unlockedCodes, productByCode }) => {
   const code = normalizeProductCode(product?.code);
@@ -887,24 +659,13 @@ export const createResourceStripePaymentIntent = catchAsync(async (req, res) => 
     });
   }
 
-  const referralRelationship = await resolveReferralRelationshipForResourcePurchase({
-    user,
-    product,
-    referralCode: req.body?.referralCode,
-    referralProductId: req.body?.referralProductId,
-  });
-  const pricing = getPriceForProduct(
-    product,
-    referralRelationship ? REFERRAL_DISCOUNT_RATE : 0
-  );
+  const pricing = getPriceForProduct(product);
 
   const purchase = await createPendingResourcePurchase({
     userId,
     product,
     provider: "stripe",
     pricing,
-    referralRelationship,
-    referralProductId: req.body?.referralProductId,
   });
 
   const stripe = getStripeClient();
@@ -919,7 +680,7 @@ export const createResourceStripePaymentIntent = catchAsync(async (req, res) => 
       productCode: product.code,
       resourcePurchaseId: purchase._id.toString(),
       purchaseType: "resource",
-      referralCodeApplied: purchase.referralCodeApplied || "",
+      referralCodeApplied: "",
     },
   });
 
@@ -949,8 +710,8 @@ export const createResourceStripePaymentIntent = catchAsync(async (req, res) => 
         referralDiscountRate: pricing.referralDiscountRate,
       },
       referral: {
-        applied: Boolean(referralRelationship),
-        referralCode: purchase.referralCodeApplied || "",
+        applied: false,
+        referralCode: "",
       },
     },
   });
@@ -1017,13 +778,6 @@ export const confirmResourceStripePayment = catchAsync(async (req, res) => {
   await purchase.save();
 
   const user = await applyResourceUnlocksToUser({ userId, product });
-  await processReferralRewardForCompletedResourcePurchase({
-    user,
-    purchase,
-    product,
-    paymentFingerprint,
-  });
-
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
@@ -1061,16 +815,7 @@ export const createResourcePayPalOrder = catchAsync(async (req, res) => {
     });
   }
 
-  const referralRelationship = await resolveReferralRelationshipForResourcePurchase({
-    user,
-    product,
-    referralCode: req.body?.referralCode,
-    referralProductId: req.body?.referralProductId,
-  });
-  const pricing = getPriceForProduct(
-    product,
-    referralRelationship ? REFERRAL_DISCOUNT_RATE : 0
-  );
+  const pricing = getPriceForProduct(product);
   const token = await getPayPalAccessToken();
 
   const orderRes = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders`, {
@@ -1108,8 +853,6 @@ export const createResourcePayPalOrder = catchAsync(async (req, res) => {
     product,
     provider: "paypal",
     pricing,
-    referralRelationship,
-    referralProductId: req.body?.referralProductId,
   });
   purchase.paypalOrderId = orderData.id;
   await purchase.save();
@@ -1141,8 +884,8 @@ export const createResourcePayPalOrder = catchAsync(async (req, res) => {
         referralDiscountRate: pricing.referralDiscountRate,
       },
       referral: {
-        applied: Boolean(referralRelationship),
-        referralCode: purchase.referralCodeApplied || "",
+        applied: false,
+        referralCode: "",
       },
     },
   });
@@ -1220,13 +963,6 @@ export const captureResourcePayPalOrder = catchAsync(async (req, res) => {
   await purchase.save();
 
   const user = await applyResourceUnlocksToUser({ userId, product });
-  await processReferralRewardForCompletedResourcePurchase({
-    user,
-    purchase,
-    product,
-    paymentFingerprint,
-  });
-
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,

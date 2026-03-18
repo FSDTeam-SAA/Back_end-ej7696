@@ -11,7 +11,6 @@ import globalErrorHandler from "./middleware/globalErrorHandler.js";
 import notFound from "./middleware/notFound.js";
 import { ResourceProduct } from "./model/resourceProduct.model.js";
 import { User } from "./model/user.model.js";
-import { REFERRAL_DISCOUNT_RATE } from "./utils/referral.service.js";
 
 const app = express();
 
@@ -165,8 +164,6 @@ const renderSharedEbookLandingPage = ({
   appUrl,
   downloadUrl,
   product,
-  referralCode,
-  referrerName,
 }) => {
   const safeProductTitle = escapeHtml(product?.title || "Ebook Store");
   const safeDescription = escapeHtml(
@@ -174,13 +171,8 @@ const renderSharedEbookLandingPage = ({
       "Unlock practical study guides and certification resources in the app."
   );
   const safeCover = escapeHtml(product?.coverImageUrl || "");
-  const safeReferrerName = escapeHtml(referrerName || "A colleague");
-  const safeReferralCode = escapeHtml(referralCode || "");
   const safeCurrency = escapeHtml(product?.currency || "USD");
   const listedPrice = roundCurrency(product?.price || 0);
-  const discountedPrice = roundCurrency(
-    Math.max(listedPrice - listedPrice * REFERRAL_DISCOUNT_RATE, 0)
-  );
   const originalPrice = roundCurrency(
     product?.originalPrice ?? product?.price ?? listedPrice
   );
@@ -342,7 +334,7 @@ const renderSharedEbookLandingPage = ({
     </section>
     <section class="body">
       <div class="badge">
-        Referral from ${safeReferrerName}${safeReferralCode ? ` • Code ${safeReferralCode}` : ""}
+        Shared Ebook
       </div>
       <div class="product">
         <div class="cover">
@@ -353,18 +345,22 @@ const renderSharedEbookLandingPage = ({
           }
         </div>
         <div>
-          <div style="font-size:13px;color:#64748b;font-weight:700;">Buy in app and save 10%</div>
+          <div style="font-size:13px;color:#64748b;font-weight:700;">Buy securely in the EJ app</div>
           <div class="pricing">
-            <span class="price-now">${safeCurrency} ${discountedPrice.toFixed(2)}</span>
+            <span class="price-now">${safeCurrency} ${listedPrice.toFixed(2)}</span>
             ${
-              originalPrice > discountedPrice
+              originalPrice > listedPrice
                 ? `<span class="price-old">${safeCurrency} ${originalPrice.toFixed(2)}</span>`
                 : ""
             }
-            <span class="discount">10% referral ready</span>
+            ${
+              originalPrice > listedPrice
+                ? `<span class="discount">Sale price</span>`
+                : ""
+            }
           </div>
           <div class="helper">
-            The ebook opens in the EJ app. The referral code will be pre-filled for this product after sign up or login.
+            The ebook opens in the EJ app.
           </div>
         </div>
       </div>
@@ -377,7 +373,7 @@ const renderSharedEbookLandingPage = ({
         }
       </div>
       <div class="helper">
-        If the app is already installed, tap <strong>Open in App</strong>. If the app is not installed yet, the same button will fall back to the test build download. After installation, return to this shared page and tap <strong>Open in App</strong> so the referral code and ebook context are passed into the app.
+        If the app is already installed, tap <strong>Open in App</strong>. If the app is not installed yet, the same button will fall back to the test build download. After installation, return to this shared page and tap <strong>Open in App</strong> so ebook context is passed into the app.
       </div>
     </section>
   </main>
@@ -634,27 +630,19 @@ const renderSharedReferralLandingPage = ({
 
 app.get("/shared-ebook", async (req, res) => {
   try {
-    const referralCode = normalizeReferralCode(req.query.ref);
     const productId = req.query.productId?.toString().trim() || "";
 
-    if (!referralCode || !productId) {
-      return res.status(400).send("Referral code and productId are required.");
+    if (!productId) {
+      return res.status(400).send("productId is required.");
     }
 
-    const [product, referrer] = await Promise.all([
-      ResourceProduct.findOne({ _id: productId, isActive: true }).lean(),
-      User.findOne({ referralCode, status: "active" })
-        .select("name firstName lastName")
-        .lean(),
-    ]);
+    const product = await ResourceProduct.findOne({ _id: productId, isActive: true }).lean();
 
     if (!product) {
       return res.status(404).send("Shared ebook not found.");
     }
 
-    const appUrl = `ejflutter:///shared-ebook?ref=${encodeURIComponent(
-      referralCode
-    )}&productId=${encodeURIComponent(productId)}`;
+    const appUrl = `ejflutter:///shared-ebook?productId=${encodeURIComponent(productId)}`;
     const downloadUrl =
       process.env.REFERRAL_TEST_BUILD_URL ||
       process.env.REFERRAL_PLAY_STORE_URL ||
@@ -662,10 +650,6 @@ app.get("/shared-ebook", async (req, res) => {
       process.env.REFERRAL_APP_STORE_URL ||
       process.env.APP_STORE_URL ||
       "https://drive.google.com/file/d/12ZcZ4tDoZQuREnGPK13hVALbveHOoyxG/view?usp=sharing";
-    const referrerName =
-      referrer?.name ||
-      [referrer?.firstName, referrer?.lastName].filter(Boolean).join(" ") ||
-      "an EJ user";
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.status(200).send(
@@ -673,8 +657,6 @@ app.get("/shared-ebook", async (req, res) => {
         appUrl,
         downloadUrl,
         product,
-        referralCode,
-        referrerName,
       })
     );
   } catch (error) {
