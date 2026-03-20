@@ -84,6 +84,17 @@ const buildReferralActionPayload = (summary) => ({
   minimumCashPayout: CASH_PAYOUT_MIN_BALANCE,
 });
 
+const FINALIZED_PAYMENT_REWARD_MATCH = {
+  status: { $in: ["available", "paid_out"] },
+  commissionAmount: { $gt: 0 },
+  relationshipId: { $ne: null },
+  $or: [
+    { examAccessId: { $ne: null } },
+    { planPurchaseId: { $ne: null } },
+    { resourcePurchaseId: { $ne: null } },
+  ],
+};
+
 const resolveRequestBaseUrl = (req) => {
   const configuredBase =
     process.env.REFERRAL_LINK_BASE_URL ||
@@ -382,43 +393,164 @@ export const updateReferralPayoutRequestStatusAdmin = catchAsync(async (req, res
 export const getReferralOverviewAdmin = catchAsync(async (_req, res) => {
   await releaseMaturedReferralRewards();
 
-  const [
-    totalRelationships,
-    activeRelationships,
-    disqualifiedRelationships,
-    pendingRewards,
-    availableRewards,
-    payoutPending,
-  ] = await Promise.all([
+  const [totalSharedReferrals, usedReferralsAgg, earningsAgg] = await Promise.all([
     ReferralRelationship.countDocuments(),
-    ReferralRelationship.countDocuments({ status: "active" }),
-    ReferralRelationship.countDocuments({ status: "disqualified" }),
     ReferralReward.aggregate([
-      { $match: { status: "pending" } },
-      { $group: { _id: null, total: { $sum: "$remainingAmount" } } },
+      { $match: FINALIZED_PAYMENT_REWARD_MATCH },
+      { $group: { _id: "$relationshipId" } },
+      { $count: "total" },
     ]),
     ReferralReward.aggregate([
-      { $match: { status: "available" } },
-      { $group: { _id: null, total: { $sum: "$remainingAmount" } } },
-    ]),
-    ReferralPayoutRequest.aggregate([
-      { $match: { status: "pending" } },
-      { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
+      { $match: FINALIZED_PAYMENT_REWARD_MATCH },
+      { $group: { _id: null, total: { $sum: "$commissionAmount" } } },
     ]),
   ]);
+
+  const totalUsedReferrals = Number(usedReferralsAgg?.[0]?.total || 0);
+  const totalEarnings =
+    Math.round((Number(earningsAgg?.[0]?.total || 0) + Number.EPSILON) * 100) / 100;
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Referral overview fetched",
     data: {
-      totalRelationships,
-      activeRelationships,
-      disqualifiedRelationships,
-      pendingRewards: Number(pendingRewards?.[0]?.total || 0),
-      availableRewards: Number(availableRewards?.[0]?.total || 0),
-      payoutPendingAmount: Number(payoutPending?.[0]?.total || 0),
-      payoutPendingCount: Number(payoutPending?.[0]?.count || 0),
+      totalSharedReferrals,
+      totalUsedReferrals,
+      totalEarnings,
+    },
+  });
+});
+
+const formatUserLite = (user) => {
+  if (!user) {
+    return { id: null, name: "Unknown", email: "" };
+  }
+  return {
+    id: user._id || null,
+    name:
+      user.name ||
+      [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+      user.email ||
+      "Unknown",
+    email: user.email || "",
+  };
+};
+
+export const listReferralUsageAdmin = catchAsync(async (req, res) => {
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.max(parseInt(req.query.limit, 10) || 10, 1);
+  const skip = (page - 1) * limit;
+  const kind = (req.query.kind || "shared").toString().trim().toLowerCase();
+
+  if (!["shared", "used"].includes(kind)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "kind must be either 'shared' or 'used'");
+  }
+
+  if (kind === "shared") {
+    const [relationships, total] = await Promise.all([
+      ReferralRelationship.find({})
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("referrerUserId", "name firstName lastName email")
+        .populate("referredUserId", "name firstName lastName email")
+        .lean(),
+      ReferralRelationship.countDocuments(),
+    ]);
+
+    const items = relationships.map((relationship) => ({
+      relationshipId: relationship._id,
+      referralCode: relationship.referralCode || "",
+      referrer: formatUserLite(relationship.referrerUserId),
+      referred: formatUserLite(relationship.referredUserId),
+      joinedAt: relationship.joinedAt || relationship.createdAt || null,
+      usedAt: null,
+      totalEarnings: 0,
+      isUsed: false,
+    }));
+
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Shared referral relationships fetched",
+      data: {
+        kind,
+        items,
+        meta: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit) || 1,
+        },
+      },
+    });
+  }
+
+  const usedBasePipeline = [
+    { $match: FINALIZED_PAYMENT_REWARD_MATCH },
+    {
+      $group: {
+        _id: "$relationshipId",
+        totalEarnings: { $sum: "$commissionAmount" },
+        usedAt: { $max: "$createdAt" },
+      },
+    },
+    { $sort: { usedAt: -1 } },
+  ];
+
+  const [countAgg, pageAgg] = await Promise.all([
+    ReferralReward.aggregate([...usedBasePipeline, { $count: "total" }]),
+    ReferralReward.aggregate([...usedBasePipeline, { $skip: skip }, { $limit: limit }]),
+  ]);
+
+  const total = Number(countAgg?.[0]?.total || 0);
+  const relationshipIds = pageAgg.map((item) => item._id).filter(Boolean);
+
+  const relationships = relationshipIds.length
+    ? await ReferralRelationship.find({ _id: { $in: relationshipIds } })
+        .populate("referrerUserId", "name firstName lastName email")
+        .populate("referredUserId", "name firstName lastName email")
+        .lean()
+    : [];
+
+  const relationshipById = relationships.reduce((acc, relationship) => {
+    acc[relationship._id.toString()] = relationship;
+    return acc;
+  }, {});
+
+  const items = pageAgg
+    .map((entry) => {
+      const relationship = relationshipById[entry._id?.toString?.() || ""];
+      if (!relationship) return null;
+
+      return {
+        relationshipId: relationship._id,
+        referralCode: relationship.referralCode || "",
+        referrer: formatUserLite(relationship.referrerUserId),
+        referred: formatUserLite(relationship.referredUserId),
+        joinedAt: relationship.joinedAt || relationship.createdAt || null,
+        usedAt: entry.usedAt || relationship.upgradedAt || null,
+        totalEarnings:
+          Math.round((Number(entry.totalEarnings || 0) + Number.EPSILON) * 100) / 100,
+        isUsed: true,
+      };
+    })
+    .filter(Boolean);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Used referral relationships fetched",
+    data: {
+      kind,
+      items,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
     },
   });
 });

@@ -7,6 +7,7 @@ import {
   getMyReferredUsers,
   getPublicReferralCode,
   getReferralOverviewAdmin,
+  listReferralUsageAdmin,
   listReferralPayoutRequestsAdmin,
   requestReferralCashPayout,
   updateReferralPayoutRequestStatusAdmin,
@@ -30,6 +31,12 @@ router.get(
   protect,
   requirePermission("view_referral_analytics"),
   getReferralOverviewAdmin
+);
+router.get(
+  "/admin/relationships",
+  protect,
+  requirePermission("view_referral_analytics"),
+  listReferralUsageAdmin
 );
 router.get(
   "/admin/payout-requests",
