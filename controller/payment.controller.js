@@ -163,6 +163,62 @@ const getActiveReferralRelationshipForUser = async (userId) => {
   });
 };
 
+const buildReferrerName = (referrer) => {
+  if (!referrer) return "Inspector";
+  return (
+    referrer.name ||
+    [referrer.firstName, referrer.lastName].filter(Boolean).join(" ") ||
+    "Inspector"
+  );
+};
+
+const buildProfessionalUpgradeReferralState = async (user) => {
+  if (!user?._id) {
+    return {
+      relationship: null,
+      alreadyCompletedUpgrade: false,
+      referralEligible: false,
+      referralDiscountAmount: 0,
+      referralDiscountRate: 0,
+      referralOffer: null,
+    };
+  }
+
+  const pricing = await getPricing();
+  const planBasePrice = roundCurrency(pricing.professionalPlanPrice);
+  const [relationship, alreadyCompletedUpgrade] = await Promise.all([
+    getActiveReferralRelationshipForUser(user._id),
+    hasCompletedProfessionalPurchase(user._id),
+  ]);
+  const referralEligible = Boolean(relationship) && !alreadyCompletedUpgrade;
+  const referralDiscountRate = referralEligible ? REFERRAL_DISCOUNT_RATE : 0;
+  const referralDiscountAmount = referralEligible
+    ? roundCurrency(planBasePrice * referralDiscountRate)
+    : 0;
+
+  let referralOffer = null;
+  if (referralEligible && relationship) {
+    const referrer = await User.findById(relationship.referrerUserId).select(
+      "name firstName lastName"
+    );
+    referralOffer = {
+      referralCode: relationship.referralCode || "",
+      referrerName: buildReferrerName(referrer),
+      discountPercent: Math.round(referralDiscountRate * 100),
+      appliesTo: "professional_plan_upgrade",
+    };
+  }
+
+  return {
+    relationship,
+    alreadyCompletedUpgrade,
+    referralEligible,
+    referralDiscountAmount,
+    referralDiscountRate,
+    referralOffer,
+  };
+};
+
 const hasCompletedProfessionalPurchase = async (userId) => {
   if (!userId) return false;
   const hit = await ProfessionalPlanPurchase.exists({
@@ -186,18 +242,13 @@ const hasCompletedExamUnlockPurchase = async (userId) => {
 const buildExamCheckoutContext = async ({ user, addonSelection }) => {
   const pricing = await getPricing();
   const examBasePrice = roundCurrency(pricing.examUnlockPrice);
-
-  const relationship = await getActiveReferralRelationshipForUser(user._id);
   const alreadyCompletedExamUnlock = await hasCompletedExamUnlockPurchase(
     user._id
   );
-  const referralEligible =
-    Boolean(relationship) && !alreadyCompletedExamUnlock;
-
-  const referralDiscountAmount = referralEligible
-    ? roundCurrency(examBasePrice * REFERRAL_DISCOUNT_RATE)
-    : 0;
-  const referralDiscountRate = referralEligible ? REFERRAL_DISCOUNT_RATE : 0;
+  const relationship = null;
+  const referralEligible = false;
+  const referralDiscountAmount = 0;
+  const referralDiscountRate = 0;
   const examFinalPrice = roundCurrency(examBasePrice - referralDiscountAmount);
 
   const addonProduct = await getUpgradeAddonProduct(addonSelection);
@@ -343,9 +394,13 @@ const buildProfessionalPlanCheckoutContext = async ({
 }) => {
   const pricing = await getPricing();
   const planBasePrice = roundCurrency(pricing.professionalPlanPrice);
-
-  const referralDiscountAmount = 0;
-  const referralDiscountRate = 0;
+  const {
+    relationship,
+    alreadyCompletedUpgrade,
+    referralEligible,
+    referralDiscountAmount,
+    referralDiscountRate,
+  } = await buildProfessionalUpgradeReferralState(user);
   const planFinalPrice = roundCurrency(planBasePrice - referralDiscountAmount);
 
   const addonProduct = await getUpgradeAddonProduct(addonSelection);
@@ -379,11 +434,11 @@ const buildProfessionalPlanCheckoutContext = async ({
     addonFinalPrice,
     totalAmount,
     revenueTags,
-    referralCodeApplied: "",
-    referralRelationshipId: null,
+    referralCodeApplied: relationship?.referralCode || "",
+    referralRelationshipId: relationship?._id || null,
     metadata: {
-      referralEligible: false,
-      alreadyCompletedUpgrade: await hasCompletedProfessionalPurchase(user._id),
+      referralEligible,
+      alreadyCompletedUpgrade,
     },
   });
 
@@ -391,6 +446,7 @@ const buildProfessionalPlanCheckoutContext = async ({
     pricing,
     addonProduct,
     planPurchase,
+    referralEligible,
   };
 };
 
@@ -1801,6 +1857,7 @@ export const getProfessionalPlan = catchAsync(async (req, res) => {
   const settings = await AppSetting.findOne().lean();
   const addOnOptions = await getUpgradeAddOnOptions();
   const price = settings?.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE;
+  const unlockExamPrice = settings?.examUnlockPrice ?? DEFAULT_EXAM_PRICE;
   const currency = settings?.currency ?? DEFAULT_CURRENCY;
   const intervalCount =
     settings?.professionalPlanIntervalCount ?? DEFAULT_PRO_PLAN_INTERVAL_COUNT;
@@ -1810,6 +1867,12 @@ export const getProfessionalPlan = catchAsync(async (req, res) => {
     settings?.professionalPlanDescription ?? DEFAULT_PRO_PLAN_DESCRIPTION;
   const features =
     settings?.professionalPlanFeatures ?? DEFAULT_PRO_PLAN_FEATURES;
+  const referralState = req.user
+    ? await buildProfessionalUpgradeReferralState(req.user)
+    : {
+        referralEligible: false,
+        referralOffer: null,
+      };
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -1820,6 +1883,7 @@ export const getProfessionalPlan = catchAsync(async (req, res) => {
         id: "professional",
         name: "Professional Plan",
         price,
+        unlockExamPrice,
         currency,
         interval: {
           count: intervalCount,
@@ -1828,10 +1892,8 @@ export const getProfessionalPlan = catchAsync(async (req, res) => {
         },
         description,
         features,
-        referralOffer: {
-          discountPercent: 0,
-          appliesTo: "first_exam_unlock",
-        },
+        referralEligible: referralState.referralEligible,
+        referralOffer: referralState.referralOffer,
       },
       prePurchaseAddOnOptions: addOnOptions,
     },

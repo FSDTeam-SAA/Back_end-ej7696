@@ -9,9 +9,15 @@ import { SupportTicket } from "../model/supportTicket.model.js";
 import { SupportMessage } from "../model/supportMessage.model.js";
 import { SupportNotification } from "../model/supportNotification.model.js";
 
+const INBOUND_TICKET_SUBJECT_REGEX = /\[ticket:\s*([a-f0-9]{24})\]/i;
+
+const buildTicketEmailSubject = (prefix, ticket) =>
+  `${prefix} [Ticket: ${ticket._id}]`;
+
 const buildAdminEmail = (ticket, message) => `
   <div style="font-family: Arial, sans-serif; line-height: 1.5;">
     <h2>New Support Ticket</h2>
+    <p><strong>Ticket ID:</strong> ${ticket._id}</p>
     <p><strong>Subject:</strong> ${ticket.subject}</p>
     <p><strong>Email:</strong> ${ticket.email}</p>
     <p><strong>Phone:</strong> ${ticket.phone || "N/A"}</p>
@@ -28,22 +34,26 @@ const buildUserConfirmationEmail = (ticket) => `
     <p>Thanks for contacting support. We will review your request and reply soon.</p>
     <p><strong>Ticket:</strong> ${ticket.subject}</p>
     <p><strong>Ticket ID:</strong> ${ticket._id}</p>
+    <p>Reply to this email to continue the conversation and keep the ticket code in the subject line.</p>
   </div>
 `;
 
 const buildUserReplyEmail = (ticket, message) => `
   <div style="font-family: Arial, sans-serif; line-height: 1.5;">
     <h2>Support replied to your ticket</h2>
+    <p><strong>Ticket ID:</strong> ${ticket._id}</p>
     <p><strong>Subject:</strong> ${ticket.subject}</p>
     <div style="padding: 12px; background: #f6f6f6; border-radius: 6px;">
       ${message.message}
     </div>
+    <p style="margin-top: 12px;">Reply to this email to send another message on this ticket.</p>
   </div>
 `;
 
 const buildAdminReplyEmail = (ticket, message, senderRole = "user") => `
   <div style="font-family: Arial, sans-serif; line-height: 1.5;">
     <h2>New reply on support ticket</h2>
+    <p><strong>Ticket ID:</strong> ${ticket._id}</p>
     <p><strong>Subject:</strong> ${ticket.subject}</p>
     <p><strong>From:</strong> ${senderRole}</p>
     <div style="padding: 12px; background: #f6f6f6; border-radius: 6px;">
@@ -96,6 +106,97 @@ const hasSupportManagerAccess = (user) => {
   return permissions.includes("manage_support_tickets");
 };
 
+const normalizeEmailAddress = (value = "") => {
+  const raw = value.toString().trim();
+  if (!raw) return "";
+  const match = raw.match(/<([^>]+)>/);
+  return (match?.[1] || raw).trim().toLowerCase();
+};
+
+const pickInboundText = (body = {}) => {
+  const candidates = [
+    body["stripped-text"],
+    body["body-plain"],
+    body.text,
+    body.message,
+    body.body,
+    body["Text-body"],
+    body["body-html"],
+    body.html,
+  ];
+  for (const value of candidates) {
+    const text = value?.toString().trim();
+    if (text) return text;
+  }
+  return "";
+};
+
+const extractInboundTicketId = (body = {}) => {
+  const candidates = [
+    body.ticketId,
+    body["ticket-id"],
+    body.subject,
+    body.Subject,
+    body["stripped-text"],
+    body["body-plain"],
+  ];
+
+  for (const value of candidates) {
+    const text = value?.toString() || "";
+    if (!text) continue;
+    const directId = text.match(/\b[a-f0-9]{24}\b/i)?.[0];
+    const taggedId = text.match(INBOUND_TICKET_SUBJECT_REGEX)?.[1];
+    const ticketId = taggedId || directId;
+    if (ticketId) return ticketId;
+  }
+
+  return "";
+};
+
+const validateInboundSupportSecret = (req) => {
+  const expectedSecret = process.env.SUPPORT_INBOUND_SECRET?.trim();
+  if (!expectedSecret) return;
+
+  const providedSecret =
+    req.headers["x-support-inbound-secret"]?.toString().trim() ||
+    req.body?.secret?.toString().trim() ||
+    req.query?.secret?.toString().trim() ||
+    "";
+
+  if (providedSecret !== expectedSecret) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "Invalid inbound support secret");
+  }
+};
+
+const notifySupportTeamOfUserReply = async (req, ticket, reply, actorId, actorRole) => {
+  const supportAdmins = await findSupportAdmins();
+  const adminNotifications = supportAdmins.map((admin) => ({
+    userId: admin._id,
+    ticketId: ticket._id,
+    type: "support_user_reply",
+    message: `User replied to ticket: ${ticket.subject}`,
+  }));
+  if (adminNotifications.length) {
+    await SupportNotification.insertMany(adminNotifications);
+  }
+
+  notifyAdminsSocket(req, {
+    type: "support_user_reply",
+    ticketId: ticket._id,
+    subject: ticket.subject,
+    userId: actorId,
+  });
+
+  const adminEmails = buildAdminEmailRecipients(supportAdmins);
+  adminEmails.forEach((adminEmail) => {
+    sendEmail(
+      adminEmail,
+      buildTicketEmailSubject("New user reply on support ticket", ticket),
+      buildAdminReplyEmail(ticket, reply, actorRole)
+    ).catch(() => null);
+  });
+};
+
 export const createSupportTicket = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
@@ -130,6 +231,7 @@ export const createSupportTicket = catchAsync(async (req, res) => {
     ticketId: ticket._id,
     senderId: userId,
     senderRole: req.user?.role || "user",
+    senderEmail: resolvedEmail,
     message: description,
     attachment,
   });
@@ -150,7 +252,7 @@ export const createSupportTicket = catchAsync(async (req, res) => {
   adminEmails.forEach((adminEmail) => {
     sendEmail(
       adminEmail,
-      "New Support Ticket",
+      buildTicketEmailSubject("New Support Ticket", ticket),
       buildAdminEmail(ticket, message)
     ).catch(() => null);
   });
@@ -164,7 +266,7 @@ export const createSupportTicket = catchAsync(async (req, res) => {
 
   sendEmail(
     resolvedEmail,
-    "Support request received",
+    buildTicketEmailSubject("Support request received", ticket),
     buildUserConfirmationEmail(ticket)
   ).catch(() => null);
 
@@ -217,6 +319,7 @@ export const replyToSupportTicket = catchAsync(async (req, res) => {
     ticketId: ticket._id,
     senderId: actorId,
     senderRole: actorRole,
+    senderEmail: normalizeEmailAddress(req.user?.email || ticket.email),
     message,
     attachment,
   });
@@ -241,42 +344,102 @@ export const replyToSupportTicket = catchAsync(async (req, res) => {
 
     sendEmail(
       ticket.email,
-      "Support reply received",
+      buildTicketEmailSubject("Support reply received", ticket),
       buildUserReplyEmail(ticket, reply)
     ).catch(() => null);
   } else {
-    const supportAdmins = await findSupportAdmins();
-    const adminNotifications = supportAdmins.map((admin) => ({
-      userId: admin._id,
-      ticketId: ticket._id,
-      type: "support_user_reply",
-      message: `User replied to ticket: ${ticket.subject}`,
-    }));
-    if (adminNotifications.length) {
-      await SupportNotification.insertMany(adminNotifications);
-    }
-
-    notifyAdminsSocket(req, {
-      type: "support_user_reply",
-      ticketId: ticket._id,
-      subject: ticket.subject,
-      userId: actorId,
-    });
-
-    const adminEmails = buildAdminEmailRecipients(supportAdmins);
-    adminEmails.forEach((adminEmail) => {
-      sendEmail(
-        adminEmail,
-        "New user reply on support ticket",
-        buildAdminReplyEmail(ticket, reply, actorRole)
-      ).catch(() => null);
-    });
+    await notifySupportTeamOfUserReply(req, ticket, reply, actorId, actorRole);
   }
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Reply sent",
+    data: {
+      ticketId: ticket._id,
+      messageId: reply._id,
+    },
+  });
+});
+
+export const receiveInboundSupportReply = catchAsync(async (req, res) => {
+  validateInboundSupportSecret(req);
+
+  const body = req.body || {};
+  const ticketId = extractInboundTicketId(body);
+  const inboundMessage = pickInboundText(body);
+  const senderEmail = normalizeEmailAddress(
+    body.from || body.sender || body["From"] || body.email
+  );
+  const externalMessageId = (
+    body["Message-Id"] ||
+    body["message-id"] ||
+    body.messageId ||
+    ""
+  )
+    .toString()
+    .trim();
+
+  if (!ticketId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Inbound email is missing a ticket id");
+  }
+  if (!inboundMessage) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Inbound email is missing a reply body");
+  }
+
+  const ticket = await SupportTicket.findById(ticketId);
+  if (!ticket) throw new AppError(httpStatus.NOT_FOUND, "Ticket not found");
+
+  if (senderEmail && normalizeEmailAddress(ticket.email) !== senderEmail) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "Inbound sender email does not match the ticket owner"
+    );
+  }
+
+  if (externalMessageId) {
+    const existingReply = await SupportMessage.findOne({ externalMessageId }).lean();
+    if (existingReply) {
+      return sendResponse(res, {
+        statusCode: httpStatus.OK,
+        success: true,
+        message: "Inbound reply already processed",
+        data: {
+          ticketId: ticket._id,
+          messageId: existingReply._id,
+          duplicate: true,
+        },
+      });
+    }
+  }
+
+  const reply = await SupportMessage.create({
+    ticketId: ticket._id,
+    senderId: ticket.userId,
+    senderRole: "user",
+    senderEmail: senderEmail || normalizeEmailAddress(ticket.email),
+    message: inboundMessage,
+    source: "email_inbound",
+    ...(externalMessageId ? { externalMessageId } : {}),
+    attachment: { public_id: "", url: "" },
+  });
+
+  ticket.status = "open";
+  ticket.lastMessageAt = new Date();
+  await ticket.save();
+
+  await notifySupportTeamOfUserReply(
+    req,
+    ticket,
+    reply,
+    ticket.userId?.toString(),
+    "user"
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Inbound support reply processed",
     data: {
       ticketId: ticket._id,
       messageId: reply._id,

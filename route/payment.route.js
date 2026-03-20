@@ -18,7 +18,11 @@ import {
   updateProfessionalPlanPurchaseStatus,
   updatePricingSettings,
 } from "../controller/payment.controller.js";
-import { protect, requirePermission } from "../middleware/auth.middleware.js";
+import {
+  optionalProtect,
+  protect,
+  requirePermission,
+} from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
@@ -40,7 +44,7 @@ router.post(
   protect,
   confirmProfessionalPlanStripePayment
 );
-router.get("/plan/professional", getProfessionalPlan);
+router.get("/plan/professional", optionalProtect, getProfessionalPlan);
 router.post("/admin/exam/:examId/unlock", protect, requirePermission("manual_exam_unlocks"), manualUnlockExam);
 router.post("/admin/exam/:examId/lock", protect, requirePermission("manual_exam_unlocks"), manualLockExam);
 router.get("/admin/pricing", protect, requirePermission("manage_subscription"), getPricingSettings);

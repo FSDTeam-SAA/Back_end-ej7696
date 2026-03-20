@@ -58,7 +58,9 @@ const validateInstallationContext = (req, decoded, user) => {
 
 export const protect = async (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
-  if (!token) throw new AppError(httpStatus.NOT_FOUND, "Token not found");
+  if (!token) {
+    throw new AppError(httpStatus.UNAUTHORIZED, "Token not found");
+  }
 
   try {
     const decoded = await jwt.verify(token, process.env.JWT_ACCESS_SECRET);
