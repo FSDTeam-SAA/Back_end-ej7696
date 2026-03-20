@@ -131,7 +131,6 @@ export const releaseMaturedReferralRewards = async (userId) => {
   const now = new Date();
   const filter = {
     status: "pending",
-    pendingUntil: { $lte: now },
     remainingAmount: { $gt: 0 },
   };
   if (userId) {
@@ -141,6 +140,7 @@ export const releaseMaturedReferralRewards = async (userId) => {
   await ReferralReward.updateMany(filter, {
     $set: {
       status: "available",
+      pendingUntil: now,
       availableAt: now,
     },
   });
@@ -267,8 +267,7 @@ export const createPendingReferralReward = async ({
   const existing = await ReferralReward.findOne(existingFilter);
   if (existing) return existing;
 
-  const pendingUntil = new Date();
-  pendingUntil.setDate(pendingUntil.getDate() + REFERRAL_PENDING_DAYS);
+  const finalizedAt = new Date();
 
   const payload = {
     relationshipId: relationship._id,
@@ -278,8 +277,9 @@ export const createPendingReferralReward = async ({
     commissionRate,
     commissionAmount: normalizedAmount,
     remainingAmount: normalizedAmount,
-    status: "pending",
-    pendingUntil,
+    status: "available",
+    pendingUntil: finalizedAt,
+    availableAt: finalizedAt,
     metadata: {
       referralCode: relationship.referralCode,
       ...(metadata || {}),
