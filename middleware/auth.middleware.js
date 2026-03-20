@@ -15,7 +15,7 @@ const resolveRequestInstallationId = (req) =>
   );
 
 const getStoredInstallationId = (user) =>
-  normalizeInstallationId(user?.activeInstallationId);
+  normalizeInstallationId(user?.activeInstallationId || user?.activeDeviceId);
 
 const normalizeExpiredProfessionalSubscription = async (user) => {
   if (!user) return user;
