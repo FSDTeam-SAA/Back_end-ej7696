@@ -24,7 +24,7 @@ import {
 
 const REFERRAL_PROGRAM_HEADLINE = "Help Your Friend Pass Their Certification";
 const REFERRAL_PROGRAM_DESCRIPTION =
-  "Invite someone preparing for API certification exams. If they register using your referral code, they get 10% off their first exam unlock and you earn a 10% commission signup reward.";
+  "Invite someone preparing for API certification exams. If they register using your referral code, they get 10% off their Professional Plan upgrade and you earn a 10% commission signup reward.";
 const REFERRAL_SHARE_CHANNELS = [
   "copy_link",
   "whatsapp",
@@ -50,7 +50,7 @@ const buildReferralShareMessage = ({ referralCode, referralLink }) => {
     "",
     `Use my referral code and get ${Math.round(
       REFERRAL_DISCOUNT_RATE * 100
-    )}% off your first exam unlock. When you register, I also get a 10% referral commission bonus.`,
+    )}% off your Professional Plan upgrade. When you register, I also get a 10% referral commission bonus.`,
   ];
 
   if (appStoreLink) {
@@ -212,6 +212,7 @@ export const getPublicReferralCode = catchAsync(async (req, res) => {
       ),
       referrerName,
       discountPercent: 10,
+      appliesTo: "professional_plan_upgrade",
     },
   });
 });

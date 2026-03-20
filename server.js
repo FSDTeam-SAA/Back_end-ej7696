@@ -567,7 +567,7 @@ const renderSharedReferralLandingPage = ({
   <main class="shell">
     <section class="hero">
       <h1>Get 10% Off Your First Exam Unlock</h1>
-      <p>${safeReferrerName} invited you to join EJ exam prep. Register in the app with this referral and your first paid exam unlock will get 10% off automatically.</p>
+      <p>${safeReferrerName} invited you to join EJ exam prep. Register in the app with this referral and your Professional Plan upgrade will get 10% off automatically.</p>
     </section>
     <section class="body">
       <div class="badge">Referral ready from ${safeReferrerName}</div>
@@ -578,7 +578,7 @@ const renderSharedReferralLandingPage = ({
       <ul class="list">
         <li>Install the app from the button below.</li>
         <li>Register your account from the shared invite flow.</li>
-        <li>Buy your first exam unlock and the 10% discount will apply automatically.</li>
+        <li>Upgrade to the Professional Plan and the 10% discount will apply automatically.</li>
       </ul>
       <div style="margin-top: 18px;">
         <a class="btn btn-primary" href="${safeAppUrl}" onclick="return openAppOrDownload();">Open in App</a>

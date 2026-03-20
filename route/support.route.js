@@ -3,6 +3,7 @@ import {
   createSupportTicket,
   getSupportTicketDetails,
   getSupportTickets,
+  receiveInboundSupportReply,
   replyToSupportTicket,
 } from "../controller/support.controller.js";
 import upload from "../middleware/multer.middleware.js";
@@ -12,6 +13,7 @@ const router = express.Router();
 
 router.post("/", protect, upload.single("attachment"), createSupportTicket);
 router.get("/", protect, getSupportTickets);
+router.post("/inbound/email", upload.none(), receiveInboundSupportReply);
 router.get("/:ticketId", protect, getSupportTicketDetails);
 router.post(
   "/:ticketId/reply",
