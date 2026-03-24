@@ -15,7 +15,6 @@ router.post("/", protect, upload.single("attachment"), createSupportTicket);
 router.get("/", protect, getSupportTickets);
 router.post("/inbound/email", upload.none(), receiveInboundSupportReply);
 router.get("/:ticketId", protect, getSupportTicketDetails);
-router.get("/:ticketId/reply", protect, replyToSupportTicket);
 router.post(
   "/:ticketId/reply",
   protect,
