@@ -286,7 +286,13 @@ export const replyToSupportTicket = catchAsync(async (req, res) => {
   const actorRole = req.user?.role?.toString().toLowerCase() || "user";
   const canManageTickets = hasSupportManagerAccess(req.user);
   const ticketId = req.params.ticketId;
-  const { message } = req.body;
+  const message = (
+    req.body?.message ??
+    req.query?.message ??
+    ""
+  )
+    .toString()
+    .trim();
 
   if (!actorId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   if (!ticketId || !message) {
