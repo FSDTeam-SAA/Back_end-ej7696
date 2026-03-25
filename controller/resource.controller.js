@@ -588,7 +588,7 @@ export const getResourcePreview = catchAsync(async (req, res) => {
       code: product.code,
       title: product.previewTitle || `${product.title} - Introduction`,
       previewContent: product.previewContent,
-      previewUrl: product.previewUrl,
+      previewUrl: product.previewUrl || product.contentUrl || "",
     },
   });
 });
