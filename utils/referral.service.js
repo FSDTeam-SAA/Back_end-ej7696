@@ -10,11 +10,17 @@ import { ProfessionalPlanPurchase } from "../model/professionalPlanPurchase.mode
 import { ResourcePurchase } from "../model/resourcePurchase.model.js";
 
 export const REFERRAL_DISCOUNT_RATE = 0.1;
-export const REFERRAL_PENDING_DAYS = 7;
+export const REFERRAL_PENDING_DAYS = 0;
 export const CASH_PAYOUT_MIN_BALANCE = 100;
 
 const roundCurrency = (value) =>
   Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+
+const addDays = (date, days) => {
+  const result = new Date(date);
+  result.setDate(result.getDate() + Number(days || 0));
+  return result;
+};
 
 const normalizeIdLike = (value) => value?.toString().trim() || "";
 
@@ -132,6 +138,7 @@ export const releaseMaturedReferralRewards = async (userId) => {
   const filter = {
     status: "pending",
     remainingAmount: { $gt: 0 },
+    pendingUntil: { $lte: now },
   };
   if (userId) {
     filter.referrerUserId = userId;
@@ -267,7 +274,9 @@ export const createPendingReferralReward = async ({
   const existing = await ReferralReward.findOne(existingFilter);
   if (existing) return existing;
 
-  const finalizedAt = new Date();
+  const createdAt = new Date();
+  const pendingUntil = addDays(createdAt, REFERRAL_PENDING_DAYS);
+  const isPending = pendingUntil.getTime() > createdAt.getTime();
 
   const payload = {
     relationshipId: relationship._id,
@@ -277,9 +286,9 @@ export const createPendingReferralReward = async ({
     commissionRate,
     commissionAmount: normalizedAmount,
     remainingAmount: normalizedAmount,
-    status: "available",
-    pendingUntil: finalizedAt,
-    availableAt: finalizedAt,
+    status: isPending ? "pending" : "available",
+    pendingUntil,
+    availableAt: isPending ? null : createdAt,
     metadata: {
       referralCode: relationship.referralCode,
       ...(metadata || {}),
