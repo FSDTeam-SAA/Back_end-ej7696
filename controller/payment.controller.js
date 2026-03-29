@@ -72,11 +72,20 @@ const ZERO_DECIMAL_CURRENCIES = new Set([
 
 const getPricing = async () => {
   const settings = await AppSetting.findOne().lean();
+  const referralCommissionRate = Number(settings?.referralCommissionRate);
+  const safeReferralCommissionRate =
+    Number.isFinite(referralCommissionRate) &&
+    referralCommissionRate >= 0 &&
+    referralCommissionRate <= 1
+      ? referralCommissionRate
+      : REFERRAL_DISCOUNT_RATE;
+
   return {
     examUnlockPrice: settings?.examUnlockPrice ?? DEFAULT_EXAM_PRICE,
     professionalPlanPrice:
       settings?.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
     currency: settings?.currency ?? DEFAULT_CURRENCY,
+    referralCommissionRate: safeReferralCommissionRate,
   };
 };
 
@@ -191,7 +200,9 @@ const buildProfessionalUpgradeReferralState = async (user) => {
     hasCompletedProfessionalPurchase(user._id),
   ]);
   const referralEligible = Boolean(relationship) && !alreadyCompletedUpgrade;
-  const referralDiscountRate = referralEligible ? REFERRAL_DISCOUNT_RATE : 0;
+  const referralDiscountRate = referralEligible
+    ? pricing.referralCommissionRate
+    : 0;
   const referralDiscountAmount = referralEligible
     ? roundCurrency(planBasePrice * referralDiscountRate)
     : 0;
@@ -333,59 +344,6 @@ const unlockAddonProductFromExamAccess = async ({
   return resourcePurchase;
 };
 
-const processReferralRewardForCompletedExamUnlock = async ({
-  user,
-  examAccess,
-  paymentFingerprint,
-}) => {
-  if (!user || !examAccess) return null;
-  if (!examAccess.referralRelationshipId) return null;
-  if ((examAccess.referralDiscountAmount || 0) <= 0) return null;
-
-  const relationship = await ReferralRelationship.findById(
-    examAccess.referralRelationshipId
-  );
-  if (!relationship || relationship.status !== "active") {
-    return null;
-  }
-
-  const referrer = await User.findById(relationship.referrerUserId).select(
-    "_id email activeInstallationId"
-  );
-  if (!referrer) return null;
-
-  const { fraudChecks, hasFraud } = await runUpgradeFraudChecks({
-    referredUser: user,
-    referrer,
-    paymentAccountFingerprint: paymentFingerprint,
-  });
-
-  if (hasFraud) {
-    await markRelationshipDisqualified({
-      relationship,
-      fraudChecks,
-      reason: "Referral disqualified by fraud checks",
-    });
-    return null;
-  }
-
-  relationship.upgradedAt = relationship.upgradedAt || new Date();
-  await relationship.save();
-
-  return createPendingReferralReward({
-    relationship,
-    examAccess,
-    commissionAmount: examAccess.referralDiscountAmount,
-    commissionRate:
-      examAccess.referralDiscountRate || REFERRAL_DISCOUNT_RATE,
-    currency: examAccess.currency || DEFAULT_CURRENCY,
-    metadata: {
-      source: "first_exam_unlock",
-      examId: examAccess.examId,
-    },
-  });
-};
-
 const buildProfessionalPlanCheckoutContext = async ({
   user,
   examId,
@@ -511,6 +469,9 @@ const processReferralRewardForCompletedUpgrade = async ({
   if (!relationship || relationship.status !== "active") {
     return null;
   }
+  if (relationship.upgradedAt) {
+    return null;
+  }
 
   const referrer = await User.findById(relationship.referrerUserId).select(
     "_id email activeInstallationId"
@@ -532,7 +493,7 @@ const processReferralRewardForCompletedUpgrade = async ({
     return null;
   }
 
-  relationship.upgradedAt = relationship.upgradedAt || new Date();
+  relationship.upgradedAt = new Date();
   await relationship.save();
 
   const reward = await createPendingReferralReward({
@@ -795,8 +756,6 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_GATEWAY, "Stripe payment not completed");
   }
 
-  const user = await User.findById(userId);
-  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
   const paymentFingerprint = buildStripePaymentAccountFingerprint(paymentIntent);
 
   const updatedAccess = await ExamAccess.findOneAndUpdate(
@@ -827,12 +786,6 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
       paymentFingerprint,
     });
   }
-
-  await processReferralRewardForCompletedExamUnlock({
-    user,
-    examAccess: updatedAccess,
-    paymentFingerprint,
-  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -1287,8 +1240,6 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_GATEWAY, "PayPal capture not completed");
   }
 
-  const user = await User.findById(userId);
-  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
   const paymentFingerprint = buildPayPalPaymentAccountFingerprint(captureData);
 
   const updatedAccess = await ExamAccess.findOneAndUpdate(
@@ -1319,12 +1270,6 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
       paymentFingerprint,
     });
   }
-
-  await processReferralRewardForCompletedExamUnlock({
-    user,
-    examAccess: updatedAccess,
-    paymentFingerprint,
-  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -1754,6 +1699,28 @@ export const updatePricingSettings = catchAsync(async (req, res) => {
       );
     }
     updates.examUnlockPrice = price;
+  }
+  if (
+    req.body.referralCommissionRate !== undefined ||
+    req.body.referralCommissionPercent !== undefined
+  ) {
+    let rate =
+      req.body.referralCommissionPercent !== undefined
+        ? Number(req.body.referralCommissionPercent) / 100
+        : Number(req.body.referralCommissionRate);
+
+    // Accept percentage-style values on referralCommissionRate as a convenience.
+    if (rate > 1 && rate <= 100) {
+      rate = rate / 100;
+    }
+
+    if (Number.isNaN(rate) || rate < 0 || rate > 1) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "referralCommissionRate must be between 0 and 1 (or 0-100 via referralCommissionPercent)"
+      );
+    }
+    updates.referralCommissionRate = Math.round(rate * 10000) / 10000;
   }
   if (req.body.currency !== undefined) {
     const currency = req.body.currency?.toString().trim().toUpperCase();

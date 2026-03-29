@@ -3,6 +3,7 @@ import AppError from "../errors/AppError.js";
 import catchAsync from "../utils/catchAsync.js";
 import sendResponse from "../utils/sendResponse.js";
 import { User } from "../model/user.model.js";
+import { AppSetting } from "../model/appSetting.model.js";
 import { ReferralPayoutRequest } from "../model/referralPayoutRequest.model.js";
 import { ReferralRelationship } from "../model/referralRelationship.model.js";
 import { ReferralReward } from "../model/referralReward.model.js";
@@ -24,7 +25,7 @@ import {
 
 const REFERRAL_PROGRAM_HEADLINE = "Help Your Friend Pass Their Certification";
 const REFERRAL_PROGRAM_DESCRIPTION =
-  "Invite someone preparing for API certification exams. If they register using your referral code, they get 10% off their Professional Plan upgrade and you earn a 10% commission signup reward.";
+  "Invite someone preparing for API certification exams. If they register using your referral code and complete their first Professional Plan purchase, they get a discount and you earn referral commission on that purchase.";
 const REFERRAL_SHARE_CHANNELS = [
   "copy_link",
   "whatsapp",
@@ -34,7 +35,24 @@ const REFERRAL_SHARE_CHANNELS = [
   "instagram",
 ];
 
-const buildReferralShareMessage = ({ referralCode, referralLink }) => {
+const normalizeCommissionRate = (value) => {
+  const rate = Number(value);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+    return REFERRAL_DISCOUNT_RATE;
+  }
+  return rate;
+};
+
+const getReferralCommissionRate = async () => {
+  const settings = await AppSetting.findOne().select("referralCommissionRate").lean();
+  return normalizeCommissionRate(settings?.referralCommissionRate);
+};
+
+const buildReferralShareMessage = ({
+  referralCode,
+  referralLink,
+  referralCommissionRate,
+}) => {
   const appStoreLink =
     process.env.REFERRAL_APP_STORE_URL ||
     process.env.APP_STORE_URL ||
@@ -49,8 +67,10 @@ const buildReferralShareMessage = ({ referralCode, referralLink }) => {
     "If you are studying for API 510, 570, 653 or any API exams, it is worth checking out.",
     "",
     `Use my referral code and get ${Math.round(
-      REFERRAL_DISCOUNT_RATE * 100
-    )}% off your Professional Plan upgrade. When you register, I also get a 10% referral commission bonus.`,
+      referralCommissionRate * 100
+    )}% off your first Professional Plan purchase. When you complete that purchase, I also get a ${Math.round(
+      referralCommissionRate * 100
+    )}% referral commission bonus.`,
   ];
 
   if (appStoreLink) {
@@ -61,20 +81,31 @@ const buildReferralShareMessage = ({ referralCode, referralLink }) => {
   return lines.join("\n").trim();
 };
 
-const buildReferralProgramPayload = ({ referralCode, referralLink }) => ({
+const buildReferralProgramPayload = ({
+  referralCode,
+  referralLink,
+  referralCommissionRate,
+}) => ({
   headline: REFERRAL_PROGRAM_HEADLINE,
   description: REFERRAL_PROGRAM_DESCRIPTION,
-  referrerCommissionPercent: Math.round(REFERRAL_DISCOUNT_RATE * 100),
-  newUserDiscountPercent: Math.round(REFERRAL_DISCOUNT_RATE * 100),
+  referrerCommissionPercent: Math.round(referralCommissionRate * 100),
+  newUserDiscountPercent: Math.round(referralCommissionRate * 100),
   pendingPeriodDays: REFERRAL_PENDING_DAYS,
   minimumCashPayout: CASH_PAYOUT_MIN_BALANCE,
   statusGuide: {
-    pending: "Commission is waiting for the pending window to pass.",
+    pending:
+      REFERRAL_PENDING_DAYS > 0
+        ? "Commission is waiting for the pending window to pass."
+        : "No pending wait. Commission becomes available right after the eligible purchase.",
     available: "Commission is ready for conversion or cash payout.",
     paid_out: "Commission has already been converted or paid out.",
   },
   shareChannels: REFERRAL_SHARE_CHANNELS,
-  shareMessage: buildReferralShareMessage({ referralCode, referralLink }),
+  shareMessage: buildReferralShareMessage({
+    referralCode,
+    referralLink,
+    referralCommissionRate,
+  }),
 });
 
 const buildReferralActionPayload = (summary) => ({
@@ -88,11 +119,7 @@ const FINALIZED_PAYMENT_REWARD_MATCH = {
   status: { $in: ["available", "paid_out"] },
   commissionAmount: { $gt: 0 },
   relationshipId: { $ne: null },
-  $or: [
-    { examAccessId: { $ne: null } },
-    { planPurchaseId: { $ne: null } },
-    { resourcePurchaseId: { $ne: null } },
-  ],
+  planPurchaseId: { $ne: null },
 };
 
 const resolveRequestBaseUrl = (req) => {
@@ -143,7 +170,10 @@ export const getMyReferralProfile = catchAsync(async (req, res) => {
   }
 
   const user = await ensureUserReferralIdentity(userId);
-  const summary = await getReferralSummary(userId);
+  const [summary, referralCommissionRate] = await Promise.all([
+    getReferralSummary(userId),
+    getReferralCommissionRate(),
+  ]);
   const referralLink = buildReferralLink(
     user.referralCode,
     resolveRequestBaseUrl(req)
@@ -151,6 +181,7 @@ export const getMyReferralProfile = catchAsync(async (req, res) => {
   const program = buildReferralProgramPayload({
     referralCode: user.referralCode,
     referralLink,
+    referralCommissionRate,
   });
 
   sendResponse(res, {
@@ -175,6 +206,7 @@ export const getMyReferralProgram = catchAsync(async (req, res) => {
   }
 
   const user = await ensureUserReferralIdentity(userId);
+  const referralCommissionRate = await getReferralCommissionRate();
   const referralLink = buildReferralLink(
     user.referralCode,
     resolveRequestBaseUrl(req)
@@ -187,6 +219,7 @@ export const getMyReferralProgram = catchAsync(async (req, res) => {
     data: buildReferralProgramPayload({
       referralCode: user.referralCode,
       referralLink,
+      referralCommissionRate,
     }),
   });
 });
@@ -210,6 +243,7 @@ export const getPublicReferralCode = catchAsync(async (req, res) => {
     referrer.name ||
     [referrer.firstName, referrer.lastName].filter(Boolean).join(" ") ||
     "Inspector";
+  const referralCommissionRate = await getReferralCommissionRate();
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -222,7 +256,7 @@ export const getPublicReferralCode = catchAsync(async (req, res) => {
         resolveRequestBaseUrl(req)
       ),
       referrerName,
-      discountPercent: 10,
+      discountPercent: Math.round(referralCommissionRate * 100),
       appliesTo: "professional_plan_upgrade",
     },
   });
