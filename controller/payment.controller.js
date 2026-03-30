@@ -14,6 +14,7 @@ import Stripe from "stripe";
 import mongoose from "mongoose";
 import {
   applyResourceUnlocksToUser,
+  getUpgradeCheckoutPrice,
   getUpgradeAddOnOptions,
   normalizeProductCode,
   resolveResourceRevenueTag,
@@ -230,6 +231,70 @@ const buildProfessionalUpgradeReferralState = async (user) => {
   };
 };
 
+const splitProfessionalPlanCheckoutPricing = ({
+  planBasePrice,
+  addonCheckoutPrice,
+  referralDiscountRate,
+}) => {
+  const safePlanBasePrice = roundCurrency(planBasePrice || 0);
+  const safeAddonCheckoutPrice = roundCurrency(addonCheckoutPrice || 0);
+  const subtotalBeforeReferral = roundCurrency(
+    safePlanBasePrice + safeAddonCheckoutPrice
+  );
+
+  if (subtotalBeforeReferral <= 0 || referralDiscountRate <= 0) {
+    return {
+      subtotalBeforeReferral,
+      referralDiscountAmount: 0,
+      planFinalPrice: safePlanBasePrice,
+      addonFinalPrice: safeAddonCheckoutPrice,
+      totalAmount: subtotalBeforeReferral,
+    };
+  }
+
+  const referralDiscountAmount = roundCurrency(
+    subtotalBeforeReferral * referralDiscountRate
+  );
+  const addonReferralDiscountAmount = roundCurrency(
+    (safeAddonCheckoutPrice / subtotalBeforeReferral) * referralDiscountAmount
+  );
+  const planReferralDiscountAmount = roundCurrency(
+    referralDiscountAmount - addonReferralDiscountAmount
+  );
+
+  let planFinalPrice = roundCurrency(
+    Math.max(safePlanBasePrice - planReferralDiscountAmount, 0)
+  );
+  let addonFinalPrice = roundCurrency(
+    Math.max(safeAddonCheckoutPrice - addonReferralDiscountAmount, 0)
+  );
+  const totalAmount = roundCurrency(
+    Math.max(subtotalBeforeReferral - referralDiscountAmount, 0)
+  );
+  const totalDifference = roundCurrency(
+    totalAmount - (planFinalPrice + addonFinalPrice)
+  );
+
+  if (totalDifference !== 0) {
+    const adjustedPlanFinalPrice = roundCurrency(planFinalPrice + totalDifference);
+    if (adjustedPlanFinalPrice >= 0) {
+      planFinalPrice = adjustedPlanFinalPrice;
+    } else {
+      addonFinalPrice = roundCurrency(
+        Math.max(addonFinalPrice + totalDifference, 0)
+      );
+    }
+  }
+
+  return {
+    subtotalBeforeReferral,
+    referralDiscountAmount,
+    planFinalPrice,
+    addonFinalPrice,
+    totalAmount,
+  };
+};
+
 const hasCompletedProfessionalPurchase = async (userId) => {
   if (!userId) return false;
   const hit = await ProfessionalPlanPurchase.exists({
@@ -286,7 +351,7 @@ const buildExamCheckoutContext = async ({ user, addonSelection }) => {
     ? roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0)
     : 0;
   const addonFinalPrice = addonProduct
-    ? roundCurrency(addonProduct.upgradeDiscountPrice ?? addonProduct.price ?? 0)
+    ? getUpgradeCheckoutPrice(addonProduct)
     : 0;
   const totalAmount = roundCurrency(examFinalPrice + addonFinalPrice);
 
@@ -317,7 +382,7 @@ const unlockAddonProductFromExamAccess = async ({
   const purchaseType = "exam_unlock_addon";
   const basePrice = roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0);
   const finalPrice = roundCurrency(
-    addonProduct.upgradeDiscountPrice ?? addonProduct.price ?? 0
+    getUpgradeCheckoutPrice(addonProduct)
   );
   const discountAmount = roundCurrency(Math.max(basePrice - finalPrice, 0));
 
@@ -375,20 +440,27 @@ const buildProfessionalPlanCheckoutContext = async ({
     relationship,
     alreadyCompletedUpgrade,
     referralEligible,
-    referralDiscountAmount,
     referralDiscountRate,
   } = await buildProfessionalUpgradeReferralState(user);
-  const planFinalPrice = roundCurrency(planBasePrice - referralDiscountAmount);
 
   const addonProduct = await getUpgradeAddonProduct(addonSelection);
   const addonBasePrice = addonProduct
     ? roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0)
     : 0;
-  const addonFinalPrice = addonProduct
-    ? roundCurrency(addonProduct.upgradeDiscountPrice ?? addonProduct.price ?? 0)
+  const addonCheckoutPrice = addonProduct
+    ? getUpgradeCheckoutPrice(addonProduct)
     : 0;
-
-  const totalAmount = roundCurrency(planFinalPrice + addonFinalPrice);
+  const {
+    subtotalBeforeReferral,
+    referralDiscountAmount,
+    planFinalPrice,
+    addonFinalPrice,
+    totalAmount,
+  } = splitProfessionalPlanCheckoutPricing({
+    planBasePrice,
+    addonCheckoutPrice,
+    referralDiscountRate,
+  });
 
   const revenueTags = ["professional_plan"];
   if (addonProduct) {
@@ -416,6 +488,7 @@ const buildProfessionalPlanCheckoutContext = async ({
     metadata: {
       referralEligible,
       alreadyCompletedUpgrade,
+      subtotalBeforeReferral,
     },
   });
 
@@ -438,7 +511,8 @@ const unlockAddonProductFromPlanPurchase = async ({
   const purchaseType = "professional_upgrade_addon";
   const basePrice = roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0);
   const finalPrice = roundCurrency(
-    addonProduct.upgradeDiscountPrice ?? addonProduct.price ?? 0
+    planPurchase.addonFinalPrice ??
+      getUpgradeCheckoutPrice(addonProduct)
   );
   const discountAmount = roundCurrency(Math.max(basePrice - finalPrice, 0));
 
@@ -900,6 +974,11 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
         examId,
         breakdown: {
           planBasePrice: planPurchase.planBasePrice,
+          subtotalBeforeReferral:
+            planPurchase.metadata?.subtotalBeforeReferral ??
+            roundCurrency(
+              (planPurchase.planBasePrice || 0) + (planPurchase.addonFinalPrice || 0)
+            ),
           referralDiscountAmount: planPurchase.referralDiscountAmount,
           planFinalPrice: planPurchase.planFinalPrice,
           addonProductCode: planPurchase.addonProductCode || null,
@@ -1039,6 +1118,11 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
         planPurchaseId: planPurchase._id,
         pricingBreakdown: {
           planBasePrice: planPurchase.planBasePrice,
+          subtotalBeforeReferral:
+            planPurchase.metadata?.subtotalBeforeReferral ??
+            roundCurrency(
+              (planPurchase.planBasePrice || 0) + (planPurchase.addonFinalPrice || 0)
+            ),
           referralDiscountAmount: planPurchase.referralDiscountAmount,
           planFinalPrice: planPurchase.planFinalPrice,
           addonProductCode: planPurchase.addonProductCode || null,
@@ -1538,6 +1622,11 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
       planPurchaseId: planPurchase._id,
       pricingBreakdown: {
         planBasePrice: planPurchase.planBasePrice,
+        subtotalBeforeReferral:
+          planPurchase.metadata?.subtotalBeforeReferral ??
+          roundCurrency(
+            (planPurchase.planBasePrice || 0) + (planPurchase.addonFinalPrice || 0)
+          ),
         referralDiscountAmount: planPurchase.referralDiscountAmount,
         planFinalPrice: planPurchase.planFinalPrice,
         addonProductCode: planPurchase.addonProductCode || null,
