@@ -250,6 +250,25 @@ const hasCompletedExamUnlockPurchase = async (userId) => {
   return Boolean(hit);
 };
 
+const upsertExamAccessSafely = async (filter, update, options = {}) => {
+  const upsertOptions = {
+    new: true,
+    upsert: true,
+    setDefaultsOnInsert: true,
+    ...options,
+  };
+
+  try {
+    return await ExamAccess.findOneAndUpdate(filter, update, upsertOptions);
+  } catch (error) {
+    if (error?.code !== 11000) {
+      throw error;
+    }
+
+    return ExamAccess.findOneAndUpdate(filter, update, { new: true });
+  }
+};
+
 const buildExamCheckoutContext = async ({ user, addonSelection }) => {
   const pricing = await getPricing();
   const examBasePrice = roundCurrency(pricing.examUnlockPrice);
@@ -855,7 +874,7 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
     planPurchase.stripePaymentIntentId = paymentIntent.id;
     await planPurchase.save();
 
-    await ExamAccess.findOneAndUpdate(
+    await upsertExamAccessSafely(
       { userId, examId },
       {
         userId,
@@ -866,8 +885,7 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
         purchaseType: "plan",
         purchasePrice: planPurchase.planFinalPrice,
         maxQuestionsPerSession: 2,
-      },
-      { upsert: true }
+      }
     );
 
     sendResponse(res, {
@@ -957,7 +975,7 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
       throw new AppError(httpStatus.BAD_REQUEST, "Payment intent missing examId");
     }
 
-    const updatedAccess = await ExamAccess.findOneAndUpdate(
+    const updatedAccess = await upsertExamAccessSafely(
       { userId, examId },
       {
         userId,
@@ -969,8 +987,7 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
         purchasePrice: planPurchase.planFinalPrice,
         maxQuestionsPerSession: 30,
         purchasedAt: new Date(),
-      },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      }
     );
 
     const { subscriptionStartedAt, subscriptionExpiresAt } =
@@ -1345,7 +1362,7 @@ export const createProfessionalPlanOrder = catchAsync(async (req, res) => {
   planPurchase.paypalOrderId = orderData.id;
   await planPurchase.save();
 
-  await ExamAccess.findOneAndUpdate(
+  await upsertExamAccessSafely(
     { userId, examId },
     {
       userId,
@@ -1356,8 +1373,7 @@ export const createProfessionalPlanOrder = catchAsync(async (req, res) => {
       purchaseType: "plan",
       purchasePrice: planPurchase.planFinalPrice,
       maxQuestionsPerSession: 2,
-    },
-    { upsert: true }
+    }
   );
 
   const approvalLink =
@@ -1458,7 +1474,7 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_GATEWAY, "PayPal capture not completed");
   }
 
-  const updatedAccess = await ExamAccess.findOneAndUpdate(
+  const updatedAccess = await upsertExamAccessSafely(
     { userId, examId: planPurchase.examId },
     {
       userId,
@@ -1470,8 +1486,7 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
       purchasePrice: planPurchase.planFinalPrice,
       maxQuestionsPerSession: 30,
       purchasedAt: new Date(),
-    },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    }
   );
 
   const { subscriptionStartedAt, subscriptionExpiresAt } =

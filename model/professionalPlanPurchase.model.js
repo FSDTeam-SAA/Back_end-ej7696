@@ -97,11 +97,13 @@ const professionalPlanPurchaseSchema = new Schema(
     },
     stripePaymentIntentId: {
       type: String,
-      default: "",
+      trim: true,
+      default: undefined,
     },
     paypalOrderId: {
       type: String,
-      default: "",
+      trim: true,
+      default: undefined,
     },
     paymentAccountFingerprint: {
       type: String,
@@ -123,9 +125,22 @@ const professionalPlanPurchaseSchema = new Schema(
 
 professionalPlanPurchaseSchema.index(
   { stripePaymentIntentId: 1 },
-  { unique: true, sparse: true }
+  {
+    unique: true,
+    partialFilterExpression: {
+      stripePaymentIntentId: { $exists: true, $type: "string", $ne: "" },
+    },
+  }
 );
-professionalPlanPurchaseSchema.index({ paypalOrderId: 1 }, { unique: true, sparse: true });
+professionalPlanPurchaseSchema.index(
+  { paypalOrderId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      paypalOrderId: { $exists: true, $type: "string", $ne: "" },
+    },
+  }
+);
 
 export const ProfessionalPlanPurchase = mongoose.model(
   "ProfessionalPlanPurchase",

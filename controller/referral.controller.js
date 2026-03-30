@@ -53,12 +53,6 @@ const buildReferralShareMessage = ({
   referralLink,
   referralCommissionRate,
 }) => {
-  const appStoreLink =
-    process.env.REFERRAL_APP_STORE_URL ||
-    process.env.APP_STORE_URL ||
-    process.env.CLIENT_URL ||
-    "";
-
   const lines = [
     "I have been using Inspectors Path to practice for API certification exams.",
     "",
@@ -71,13 +65,14 @@ const buildReferralShareMessage = ({
     )}% off your first Professional Plan purchase. When you complete that purchase, I also get a ${Math.round(
       referralCommissionRate * 100
     )}% referral commission bonus.`,
+    "",
+    "Open this referral link:",
+    referralLink,
+    "",
+    `Referral Code: ${referralCode}`,
+    "If the app is not installed yet, open the same link again after installation so the referral is attached automatically.",
   ];
 
-  if (appStoreLink) {
-    lines.push("", `Download the app here: ${appStoreLink}`);
-  }
-
-  lines.push("", `Referral Code: ${referralCode}`, `Referral Link: ${referralLink}`);
   return lines.join("\n").trim();
 };
 

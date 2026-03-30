@@ -566,8 +566,8 @@ const renderSharedReferralLandingPage = ({
 <body>
   <main class="shell">
     <section class="hero">
-      <h1>Get 10% Off Your First Exam Unlock</h1>
-      <p>${safeReferrerName} invited you to join EJ exam prep. Register in the app with this referral and your Professional Plan upgrade will get 10% off automatically.</p>
+      <h1>Get 10% Off Your First Professional Plan Purchase</h1>
+      <p>${safeReferrerName} invited you to join EJ exam prep. Register in the app with this referral and your first Professional Plan purchase will get 10% off automatically.</p>
     </section>
     <section class="body">
       <div class="badge">Referral ready from ${safeReferrerName}</div>
@@ -582,6 +582,7 @@ const renderSharedReferralLandingPage = ({
       </ul>
       <div style="margin-top: 18px;">
         <a class="btn btn-primary" href="${safeAppUrl}" onclick="return openAppOrDownload();">Open in App</a>
+        <a class="btn btn-secondary" href="${safeDownloadUrl}" target="_blank" rel="noreferrer" style="margin-top: 10px;">Download App</a>
       </div>
       <div class="helper">
         If the app is already installed, tap <strong>Open in App</strong>. If the app is not installed yet, the same button will fall back to the download link. After installation, open the same invite again so the referral is passed into the app automatically.
