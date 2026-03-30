@@ -15,6 +15,20 @@ export const roundCurrency = (value) =>
 export const normalizeProductCode = (code) =>
   code?.toString().trim().toLowerCase() || "";
 
+export const getUpgradeCheckoutPrice = (product) => {
+  const upgradeDiscountPrice = Number(product?.upgradeDiscountPrice);
+  if (Number.isFinite(upgradeDiscountPrice) && upgradeDiscountPrice > 0) {
+    return roundCurrency(upgradeDiscountPrice);
+  }
+
+  const regularPrice = Number(product?.price);
+  if (Number.isFinite(regularPrice) && regularPrice > 0) {
+    return roundCurrency(regularPrice);
+  }
+
+  return roundCurrency(product?.originalPrice ?? 0);
+};
+
 const asUniqueStringArray = (items = []) =>
   [...new Set((items || []).map((i) => i?.toString().trim().toLowerCase()).filter(Boolean))];
 
@@ -32,7 +46,7 @@ export const getUpgradeAddOnOptions = async () => {
     title: item.title,
     basePrice: item.originalPrice ?? item.price,
     regularPrice: item.price,
-    upgradeDiscountPrice: item.upgradeDiscountPrice ?? item.price,
+    upgradeDiscountPrice: getUpgradeCheckoutPrice(item),
     currency: item.currency || "USD",
     isBundle: Boolean(item.isBundle),
     coverImageUrl: item.coverImageUrl || "",
