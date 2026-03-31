@@ -10,7 +10,10 @@
     "staging": "env-cmd -f .env.staging node server.js",
     "prod": "env-cmd -f .env.production node server.js",
     "beta": "env-cmd -f .env.beta node server.js",
-    "migrate:referral-codes": "node scripts/backfillReferralCodes.js"
+    "migrate:referral-codes": "node scripts/backfillReferralCodes.js",
+    "migrate:referral-rewards": "node scripts/backfillReferralRewards.js",
+    "migrate:referral-reward-indexes": "node scripts/fixReferralRewardIndexes.js",
+    "inspect:referral-case": "node scripts/inspectReferralCase.js"
   },
   "author": "",
   "license": "ISC",
