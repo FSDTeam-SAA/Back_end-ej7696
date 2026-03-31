@@ -23,22 +23,22 @@ const referralRewardSchema = new Schema(
     planPurchaseId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ProfessionalPlanPurchase",
-      default: null,
+      default: undefined,
     },
     resourcePurchaseId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ResourcePurchase",
-      default: null,
+      default: undefined,
     },
     examAccessId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ExamAccess",
-      default: null,
+      default: undefined,
     },
     signupRelationshipId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ReferralRelationship",
-      default: null,
+      default: undefined,
     },
     currency: {
       type: String,
@@ -100,9 +100,41 @@ const referralRewardSchema = new Schema(
 );
 
 referralRewardSchema.index({ referrerUserId: 1, status: 1, pendingUntil: 1 });
-referralRewardSchema.index({ planPurchaseId: 1 }, { unique: true, sparse: true });
-referralRewardSchema.index({ resourcePurchaseId: 1 }, { unique: true, sparse: true });
-referralRewardSchema.index({ examAccessId: 1 }, { unique: true, sparse: true });
-referralRewardSchema.index({ signupRelationshipId: 1 }, { unique: true, sparse: true });
+referralRewardSchema.index(
+  { planPurchaseId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      planPurchaseId: { $exists: true, $type: "objectId" },
+    },
+  }
+);
+referralRewardSchema.index(
+  { resourcePurchaseId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      resourcePurchaseId: { $exists: true, $type: "objectId" },
+    },
+  }
+);
+referralRewardSchema.index(
+  { examAccessId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      examAccessId: { $exists: true, $type: "objectId" },
+    },
+  }
+);
+referralRewardSchema.index(
+  { signupRelationshipId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      signupRelationshipId: { $exists: true, $type: "objectId" },
+    },
+  }
+);
 
 export const ReferralReward = mongoose.model("ReferralReward", referralRewardSchema);

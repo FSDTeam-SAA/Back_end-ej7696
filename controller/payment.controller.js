@@ -553,18 +553,28 @@ const processReferralRewardForCompletedUpgrade = async ({
   paymentFingerprint,
 }) => {
   if (!user || !planPurchase) return null;
-  if (!planPurchase.referralRelationshipId) return null;
   if ((planPurchase.referralDiscountAmount || 0) <= 0) return null;
 
-  const relationship = await ReferralRelationship.findById(
-    planPurchase.referralRelationshipId
-  );
+  const relationship = planPurchase.referralRelationshipId
+    ? await ReferralRelationship.findById(planPurchase.referralRelationshipId)
+    : await ReferralRelationship.findOne({
+        referredUserId: user._id,
+        status: "active",
+      });
   if (!relationship || relationship.status !== "active") {
     return null;
   }
   if (relationship.upgradedAt) {
     return null;
   }
+
+  if (!planPurchase.referralRelationshipId) {
+    planPurchase.referralRelationshipId = relationship._id;
+  }
+  if (!planPurchase.referralCodeApplied) {
+    planPurchase.referralCodeApplied = relationship.referralCode || "";
+  }
+  await planPurchase.save();
 
   const referrer = await User.findById(relationship.referrerUserId).select(
     "_id email activeInstallationId"
@@ -586,9 +596,6 @@ const processReferralRewardForCompletedUpgrade = async ({
     return null;
   }
 
-  relationship.upgradedAt = new Date();
-  await relationship.save();
-
   const reward = await createPendingReferralReward({
     relationship,
     planPurchase,
@@ -596,6 +603,9 @@ const processReferralRewardForCompletedUpgrade = async ({
     commissionRate: planPurchase.referralDiscountRate || REFERRAL_DISCOUNT_RATE,
     currency: planPurchase.currency || DEFAULT_CURRENCY,
   });
+
+  relationship.upgradedAt = reward?.createdAt || new Date();
+  await relationship.save();
 
   return reward;
 };
