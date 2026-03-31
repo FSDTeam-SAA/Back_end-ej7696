@@ -488,16 +488,46 @@ export const listReferralUsageAdmin = catchAsync(async (req, res) => {
       ReferralRelationship.countDocuments(),
     ]);
 
-    const items = relationships.map((relationship) => ({
-      relationshipId: relationship._id,
-      referralCode: relationship.referralCode || "",
-      referrer: formatUserLite(relationship.referrerUserId),
-      referred: formatUserLite(relationship.referredUserId),
-      joinedAt: relationship.joinedAt || relationship.createdAt || null,
-      usedAt: null,
-      totalEarnings: 0,
-      isUsed: false,
-    }));
+    const relationshipIds = relationships.map((relationship) => relationship._id).filter(Boolean);
+
+    const rewardAgg = relationshipIds.length
+      ? await ReferralReward.aggregate([
+          {
+            $match: {
+              ...FINALIZED_PAYMENT_REWARD_MATCH,
+              relationshipId: { $in: relationshipIds },
+            },
+          },
+          {
+            $group: {
+              _id: "$relationshipId",
+              totalEarnings: { $sum: "$commissionAmount" },
+              usedAt: { $max: "$createdAt" },
+            },
+          },
+        ])
+      : [];
+
+    const rewardsByRelationshipId = rewardAgg.reduce((acc, entry) => {
+      acc[entry._id?.toString?.() || ""] = entry;
+      return acc;
+    }, {});
+
+    const items = relationships.map((relationship) => {
+      const rewardEntry = rewardsByRelationshipId[relationship._id?.toString?.() || ""];
+
+      return {
+        relationshipId: relationship._id,
+        referralCode: relationship.referralCode || "",
+        referrer: formatUserLite(relationship.referrerUserId),
+        referred: formatUserLite(relationship.referredUserId),
+        joinedAt: relationship.joinedAt || relationship.createdAt || null,
+        usedAt: rewardEntry?.usedAt || null,
+        totalEarnings:
+          Math.round((Number(rewardEntry?.totalEarnings || 0) + Number.EPSILON) * 100) / 100,
+        isUsed: Boolean(rewardEntry),
+      };
+    });
 
     return sendResponse(res, {
       statusCode: httpStatus.OK,
@@ -580,6 +610,52 @@ export const listReferralUsageAdmin = catchAsync(async (req, res) => {
         total,
         totalPages: Math.ceil(total / limit) || 1,
       },
+    },
+  });
+});
+
+export const deleteReferralRelationshipAdmin = catchAsync(async (req, res) => {
+  const relationshipId = req.params.relationshipId;
+  if (!relationshipId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "relationshipId is required");
+  }
+
+  const relationship = await ReferralRelationship.findById(relationshipId).lean();
+  if (!relationship) {
+    throw new AppError(httpStatus.NOT_FOUND, "Referral relationship not found");
+  }
+
+  const rewardExists = await ReferralReward.exists({
+    relationshipId: relationship._id,
+  });
+
+  if (rewardExists) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Cannot delete referral relationship that already has reward records"
+    );
+  }
+
+  await Promise.all([
+    ReferralRelationship.deleteOne({ _id: relationship._id }),
+    User.updateOne(
+      { _id: relationship.referredUserId },
+      {
+        $set: {
+          referredBy: null,
+          referredByCode: "",
+          referredAt: null,
+        },
+      }
+    ),
+  ]);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Referral relationship deleted",
+    data: {
+      relationshipId,
     },
   });
 });
