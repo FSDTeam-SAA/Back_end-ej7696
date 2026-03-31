@@ -1,6 +1,7 @@
 import express from "express";
 import {
   convertReferralBalanceToCredit,
+  deleteReferralRelationshipAdmin,
   getMyReferralLedger,
   getMyReferralProfile,
   getMyReferralProgram,
@@ -37,6 +38,12 @@ router.get(
   protect,
   requirePermission("view_referral_analytics"),
   listReferralUsageAdmin
+);
+router.delete(
+  "/admin/relationships/:relationshipId",
+  protect,
+  requirePermission("manage_referral_payouts"),
+  deleteReferralRelationshipAdmin
 );
 router.get(
   "/admin/payout-requests",
