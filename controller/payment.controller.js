@@ -131,12 +131,6 @@ const buildPayPalPaymentAccountFingerprint = (captureData) => {
 
 const getUpgradeAddonProduct = async (addonProductCodeOrId) => {
   if (!addonProductCodeOrId) return null;
-  if (Array.isArray(addonProductCodeOrId)) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "Only one add-on selection is allowed for upgrade"
-    );
-  }
 
   const normalizedCode = normalizeProductCode(addonProductCodeOrId);
   const orFilters = [{ code: normalizedCode }];
@@ -156,13 +150,73 @@ const getUpgradeAddonProduct = async (addonProductCodeOrId) => {
   return product;
 };
 
-const getRequestedAddonSelection = (body = {}) => {
-  const addonProductId = body?.addonProductId?.toString().trim() || "";
-  const addonProductCode = body?.addonProductCode?.toString().trim() || "";
+const toNormalizedAddonList = (value, normalizer = (item) => item) => {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(normalizer).filter(Boolean))];
+};
 
-  if (addonProductId) return addonProductId;
-  if (addonProductCode) return addonProductCode;
-  return null;
+const getRequestedAddonSelections = (body = {}) => {
+  const addonProductIds = toNormalizedAddonList(body?.addonProductIds, (item) =>
+    item?.toString().trim()
+  );
+  const addonProductCodes = toNormalizedAddonList(
+    body?.addonProductCodes,
+    (item) => normalizeProductCode(item)
+  );
+  const addonProductId = body?.addonProductId?.toString().trim() || "";
+  const addonProductCode = normalizeProductCode(body?.addonProductCode);
+
+  const selections = [
+    ...addonProductIds,
+    ...addonProductCodes,
+    ...(addonProductId ? [addonProductId] : []),
+    ...(addonProductCode ? [addonProductCode] : []),
+  ];
+
+  return [...new Set(selections.filter(Boolean))];
+};
+
+const getUpgradeAddonProducts = async (addonSelections) => {
+  const selections = Array.isArray(addonSelections)
+    ? addonSelections
+    : addonSelections
+    ? [addonSelections]
+    : [];
+  const products = [];
+  const seenProductIds = new Set();
+
+  for (const selection of selections) {
+    const product = await getUpgradeAddonProduct(selection);
+    if (!product) continue;
+    const productId = product._id.toString();
+    if (seenProductIds.has(productId)) continue;
+    seenProductIds.add(productId);
+    products.push(product);
+  }
+
+  return products;
+};
+
+const getStoredAddonSelectionsFromDoc = (doc) => {
+  if (!doc) return [];
+
+  const metadataAddonIds = toNormalizedAddonList(
+    doc?.metadata?.selectedAddonProductIds,
+    (item) => item?.toString().trim()
+  );
+  const metadataAddonCodes = toNormalizedAddonList(
+    doc?.metadata?.selectedAddonProductCodes,
+    (item) => normalizeProductCode(item)
+  );
+  const legacyAddonProductId = doc?.addonProductId?.toString?.().trim?.() || "";
+  const legacyAddonProductCode = normalizeProductCode(doc?.addonProductCode);
+
+  return [
+    ...metadataAddonIds,
+    ...metadataAddonCodes,
+    ...(legacyAddonProductId ? [legacyAddonProductId] : []),
+    ...(legacyAddonProductCode ? [legacyAddonProductCode] : []),
+  ];
 };
 
 const getActiveReferralRelationshipForUser = async (userId) => {
@@ -346,19 +400,23 @@ const buildExamCheckoutContext = async ({ user, addonSelection }) => {
   const referralDiscountRate = 0;
   const examFinalPrice = roundCurrency(examBasePrice - referralDiscountAmount);
 
-  const addonProduct = await getUpgradeAddonProduct(addonSelection);
-  const addonBasePrice = addonProduct
-    ? roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0)
-    : 0;
-  const addonFinalPrice = addonProduct
-    ? getUpgradeCheckoutPrice(addonProduct)
-    : 0;
+  const addonProducts = await getUpgradeAddonProducts(addonSelection);
+  const addonBasePrice = roundCurrency(
+    addonProducts.reduce(
+      (sum, product) =>
+        sum + Number(product.originalPrice ?? product.price ?? 0),
+      0
+    )
+  );
+  const addonFinalPrice = roundCurrency(
+    addonProducts.reduce((sum, product) => sum + getUpgradeCheckoutPrice(product), 0)
+  );
   const totalAmount = roundCurrency(examFinalPrice + addonFinalPrice);
 
   return {
     pricing,
     relationship,
-    addonProduct,
+    addonProducts,
     examBasePrice,
     referralDiscountRate,
     referralDiscountAmount,
@@ -428,6 +486,28 @@ const unlockAddonProductFromExamAccess = async ({
   return resourcePurchase;
 };
 
+const unlockAddonProductsFromExamAccess = async ({
+  userId,
+  addonProducts,
+  examAccess,
+  paymentFingerprint,
+}) => {
+  const purchases = [];
+  const products = Array.isArray(addonProducts) ? addonProducts : [];
+
+  for (const addonProduct of products) {
+    const purchase = await unlockAddonProductFromExamAccess({
+      userId,
+      addonProduct,
+      examAccess,
+      paymentFingerprint,
+    });
+    if (purchase) purchases.push(purchase);
+  }
+
+  return purchases;
+};
+
 const buildProfessionalPlanCheckoutContext = async ({
   user,
   examId,
@@ -443,13 +523,17 @@ const buildProfessionalPlanCheckoutContext = async ({
     referralDiscountRate,
   } = await buildProfessionalUpgradeReferralState(user);
 
-  const addonProduct = await getUpgradeAddonProduct(addonSelection);
-  const addonBasePrice = addonProduct
-    ? roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0)
-    : 0;
-  const addonCheckoutPrice = addonProduct
-    ? getUpgradeCheckoutPrice(addonProduct)
-    : 0;
+  const addonProducts = await getUpgradeAddonProducts(addonSelection);
+  const addonBasePrice = roundCurrency(
+    addonProducts.reduce(
+      (sum, product) =>
+        sum + Number(product.originalPrice ?? product.price ?? 0),
+      0
+    )
+  );
+  const addonCheckoutPrice = roundCurrency(
+    addonProducts.reduce((sum, product) => sum + getUpgradeCheckoutPrice(product), 0)
+  );
   const {
     subtotalBeforeReferral,
     referralDiscountAmount,
@@ -463,9 +547,11 @@ const buildProfessionalPlanCheckoutContext = async ({
   });
 
   const revenueTags = ["professional_plan"];
-  if (addonProduct) {
+  for (const addonProduct of addonProducts) {
     revenueTags.push(`pro_upgrade_addon:${addonProduct.code}`);
   }
+
+  const singleAddonProduct = addonProducts.length === 1 ? addonProducts[0] : null;
 
   const planPurchase = await ProfessionalPlanPurchase.create({
     userId: user._id,
@@ -477,8 +563,8 @@ const buildProfessionalPlanCheckoutContext = async ({
     referralDiscountRate,
     referralDiscountAmount,
     planFinalPrice,
-    addonProductId: addonProduct?._id || null,
-    addonProductCode: addonProduct?.code || "",
+    addonProductId: singleAddonProduct?._id || null,
+    addonProductCode: singleAddonProduct?.code || "",
     addonBasePrice,
     addonFinalPrice,
     totalAmount,
@@ -489,15 +575,91 @@ const buildProfessionalPlanCheckoutContext = async ({
       referralEligible,
       alreadyCompletedUpgrade,
       subtotalBeforeReferral,
+      selectedAddonProductIds: addonProducts.map((product) => product._id),
+      selectedAddonProductCodes: addonProducts.map((product) => product.code),
     },
   });
 
   return {
     pricing,
-    addonProduct,
+    addonProducts,
     planPurchase,
     referralEligible,
   };
+};
+
+const distributePlanAddonFinalPrices = ({ addonProducts, totalAddonFinalPrice }) => {
+  const products = Array.isArray(addonProducts) ? addonProducts : [];
+  const allocations = new Map();
+  if (products.length === 0) {
+    return allocations;
+  }
+
+  const safeTotalAddonFinalPrice = roundCurrency(totalAddonFinalPrice || 0);
+  if (safeTotalAddonFinalPrice <= 0) {
+    for (const addonProduct of products) {
+      allocations.set(addonProduct._id.toString(), 0);
+    }
+    return allocations;
+  }
+
+  const weightedProducts = products.map((addonProduct, index) => ({
+    addonProduct,
+    index,
+    checkoutPrice: roundCurrency(getUpgradeCheckoutPrice(addonProduct)),
+  }));
+  const totalCheckoutCents = weightedProducts.reduce(
+    (sum, entry) => sum + Math.round(entry.checkoutPrice * 100),
+    0
+  );
+
+  if (totalCheckoutCents <= 0) {
+    const equalShare = roundCurrency(safeTotalAddonFinalPrice / products.length);
+    let runningTotal = 0;
+    products.forEach((addonProduct, index) => {
+      const isLast = index === products.length - 1;
+      const finalPrice = isLast
+        ? roundCurrency(Math.max(safeTotalAddonFinalPrice - runningTotal, 0))
+        : equalShare;
+      allocations.set(addonProduct._id.toString(), finalPrice);
+      runningTotal = roundCurrency(runningTotal + finalPrice);
+    });
+    return allocations;
+  }
+
+  const totalFinalCents = Math.round(safeTotalAddonFinalPrice * 100);
+  const allocationCandidates = weightedProducts.map((entry) => {
+    const exactCents =
+      (Math.round(entry.checkoutPrice * 100) / totalCheckoutCents) *
+      totalFinalCents;
+    const floorCents = Math.floor(exactCents);
+    return {
+      ...entry,
+      allocatedCents: floorCents,
+      remainder: exactCents - floorCents,
+    };
+  });
+
+  let remainingCents =
+    totalFinalCents -
+    allocationCandidates.reduce((sum, entry) => sum + entry.allocatedCents, 0);
+
+  allocationCandidates
+    .sort((a, b) => b.remainder - a.remainder || a.index - b.index)
+    .forEach((entry) => {
+      if (remainingCents <= 0) return;
+      entry.allocatedCents += 1;
+      remainingCents -= 1;
+    });
+
+  allocationCandidates.forEach((entry) => {
+    allocations.set(
+      entry.addonProduct._id.toString(),
+      roundCurrency(entry.allocatedCents / 100)
+    );
+  });
+
+  return allocations;
 };
 
 const unlockAddonProductFromPlanPurchase = async ({
@@ -505,16 +667,26 @@ const unlockAddonProductFromPlanPurchase = async ({
   addonProduct,
   planPurchase,
   paymentFingerprint,
+  finalPriceOverride,
 }) => {
   if (!addonProduct || !planPurchase) return null;
 
   const purchaseType = "professional_upgrade_addon";
   const basePrice = roundCurrency(addonProduct.originalPrice ?? addonProduct.price ?? 0);
   const finalPrice = roundCurrency(
-    planPurchase.addonFinalPrice ??
-      getUpgradeCheckoutPrice(addonProduct)
+    finalPriceOverride ?? getUpgradeCheckoutPrice(addonProduct)
   );
   const discountAmount = roundCurrency(Math.max(basePrice - finalPrice, 0));
+
+  const existingPurchase = await ResourcePurchase.findOne({
+    userId,
+    productId: addonProduct._id,
+    purchaseType,
+    "metadata.professionalPlanPurchaseId": planPurchase._id,
+  });
+  if (existingPurchase) {
+    return existingPurchase;
+  }
 
   const resourcePurchase = await ResourcePurchase.create({
     userId,
@@ -545,6 +717,33 @@ const unlockAddonProductFromPlanPurchase = async ({
   });
 
   return resourcePurchase;
+};
+
+const unlockAddonProductsFromPlanPurchase = async ({
+  userId,
+  addonProducts,
+  planPurchase,
+  paymentFingerprint,
+}) => {
+  const purchases = [];
+  const products = Array.isArray(addonProducts) ? addonProducts : [];
+  const addonFinalPriceMap = distributePlanAddonFinalPrices({
+    addonProducts: products,
+    totalAddonFinalPrice: planPurchase?.addonFinalPrice,
+  });
+
+  for (const addonProduct of products) {
+    const purchase = await unlockAddonProductFromPlanPurchase({
+      userId,
+      addonProduct,
+      planPurchase,
+      paymentFingerprint,
+      finalPriceOverride: addonFinalPriceMap.get(addonProduct._id.toString()),
+    });
+    if (purchase) purchases.push(purchase);
+  }
+
+  return purchases;
 };
 
 const processReferralRewardForCompletedUpgrade = async ({
@@ -697,7 +896,7 @@ const getPayPalAccessToken = async () => {
 export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   const examId = req.params.examId;
-  const addonSelection = getRequestedAddonSelection(req.body);
+  const addonSelection = getRequestedAddonSelections(req.body);
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
 
@@ -721,7 +920,7 @@ export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
   const {
     pricing,
     relationship,
-    addonProduct,
+    addonProducts,
     examBasePrice,
     referralDiscountRate,
     referralDiscountAmount,
@@ -751,8 +950,8 @@ export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
       referralDiscountAmount,
       referralCodeApplied: relationship?.referralCode || "",
       referralRelationshipId: relationship?._id || null,
-      addonProductId: addonProduct?._id || null,
-      addonProductCode: addonProduct?.code || "",
+      addonProductId: addonProducts.length === 1 ? addonProducts[0]._id : null,
+      addonProductCode: addonProducts.length === 1 ? addonProducts[0].code : "",
       addonBasePrice,
       addonFinalPrice,
       totalAmount,
@@ -760,6 +959,8 @@ export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
       metadata: {
         referralEligible,
         alreadyCompletedExamUnlock,
+        selectedAddonProductIds: addonProducts.map((product) => product._id),
+        selectedAddonProductCodes: addonProducts.map((product) => product.code),
       },
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -779,7 +980,7 @@ export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
       purchaseType: "exam",
       examAccessId: accessDoc._id.toString(),
       referralCodeApplied: relationship?.referralCode || "",
-      addonProductCode: addonProduct?.code || "",
+      addonProductCodes: addonProducts.map((product) => product.code).join(","),
     },
   });
 
@@ -805,7 +1006,9 @@ export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
         examBasePrice,
         referralDiscountAmount,
         examFinalPrice,
-        addonProductCode: addonProduct?.code || null,
+        addonProductCode:
+          addonProducts.length === 1 ? addonProducts[0].code : null,
+        addonProductCodes: addonProducts.map((product) => product.code),
         addonFinalPrice,
         totalAmount,
       },
@@ -878,16 +1081,17 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
   );
 
   let addonPurchase = null;
-  const addonSelection =
-    updatedAccess.addonProductId || updatedAccess.addonProductCode || null;
-  if (addonSelection) {
-    const addonProduct = await getUpgradeAddonProduct(addonSelection);
-    addonPurchase = await unlockAddonProductFromExamAccess({
+  let addonPurchases = [];
+  const addonSelections = getStoredAddonSelectionsFromDoc(updatedAccess);
+  if (addonSelections.length > 0) {
+    const addonProducts = await getUpgradeAddonProducts(addonSelections);
+    addonPurchases = await unlockAddonProductsFromExamAccess({
       userId,
-      addonProduct,
+      addonProducts,
       examAccess: updatedAccess,
       paymentFingerprint,
     });
+    addonPurchase = addonPurchases[0] || null;
   }
 
   sendResponse(res, {
@@ -898,6 +1102,7 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
       unlocked: true,
       access: updatedAccess,
       addonPurchase,
+      addonPurchases,
     },
   });
 });
@@ -906,7 +1111,7 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
   async (req, res) => {
     const userId = req.user?._id;
     const { examId } = req.body;
-    const addonSelection = getRequestedAddonSelection(req.body);
+    const addonSelection = getRequestedAddonSelections(req.body);
 
     if (!userId) {
       throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
@@ -929,7 +1134,7 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
 
     const {
       pricing,
-      addonProduct,
+      addonProducts,
       planPurchase,
     } = await buildProfessionalPlanCheckoutContext({
       user,
@@ -951,7 +1156,7 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
         examId: examId.toString(),
         purchaseType: "plan",
         planPurchaseId: planPurchase._id.toString(),
-        addonProductCode: addonProduct?.code || "",
+        addonProductCodes: addonProducts.map((product) => product.code).join(","),
       },
     });
 
@@ -992,6 +1197,8 @@ export const createProfessionalPlanStripePaymentIntent = catchAsync(
           referralDiscountAmount: planPurchase.referralDiscountAmount,
           planFinalPrice: planPurchase.planFinalPrice,
           addonProductCode: planPurchase.addonProductCode || null,
+          addonProductCodes:
+            planPurchase.metadata?.selectedAddonProductCodes || [],
           addonFinalPrice: planPurchase.addonFinalPrice || 0,
           totalAmount: planPurchase.totalAmount,
         },
@@ -1094,19 +1301,15 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
     planPurchase.purchasedAt = new Date();
     await planPurchase.save();
 
-    let addonProduct = null;
-    let addonResourcePurchase = null;
-    if (planPurchase.addonProductId) {
-      addonProduct = await ResourceProduct.findById(planPurchase.addonProductId);
-      if (addonProduct) {
-        addonResourcePurchase = await unlockAddonProductFromPlanPurchase({
-          userId,
-          addonProduct,
-          planPurchase,
-          paymentFingerprint: planPurchase.paymentAccountFingerprint,
-        });
-      }
-    }
+    const addonSelections = getStoredAddonSelectionsFromDoc(planPurchase);
+    const addonProducts = await getUpgradeAddonProducts(addonSelections);
+    const addonResourcePurchases = await unlockAddonProductsFromPlanPurchase({
+      userId,
+      addonProducts,
+      planPurchase,
+      paymentFingerprint: planPurchase.paymentAccountFingerprint,
+    });
+    const addonResourcePurchase = addonResourcePurchases[0] || null;
 
     await processReferralRewardForCompletedUpgrade({
       user,
@@ -1136,11 +1339,17 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
           referralDiscountAmount: planPurchase.referralDiscountAmount,
           planFinalPrice: planPurchase.planFinalPrice,
           addonProductCode: planPurchase.addonProductCode || null,
+          addonProductCodes:
+            planPurchase.metadata?.selectedAddonProductCodes || [],
           addonFinalPrice: planPurchase.addonFinalPrice || 0,
           totalAmount: planPurchase.totalAmount,
         },
-        addonUnlocked: Boolean(addonResourcePurchase),
-        addonProductCode: addonProduct?.code || null,
+        addonUnlocked: addonResourcePurchases.length > 0,
+        addonUnlockedCount: addonResourcePurchases.length,
+        addonProductCode:
+          addonProducts.length === 1 ? addonProducts[0].code : null,
+        addonProductCodes: addonProducts.map((product) => product.code),
+        addonPurchases: addonResourcePurchases,
         userResourceFlags: {
           has_api510_inspection_guide: Boolean(
             refreshedUser?.has_api510_inspection_guide
@@ -1159,7 +1368,7 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
 export const createExamPayPalOrder = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   const examId = req.params.examId;
-  const addonSelection = getRequestedAddonSelection(req.body);
+  const addonSelection = getRequestedAddonSelections(req.body);
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
 
@@ -1183,7 +1392,7 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
   const {
     pricing,
     relationship,
-    addonProduct,
+    addonProducts,
     examBasePrice,
     referralDiscountRate,
     referralDiscountAmount,
@@ -1213,8 +1422,8 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
       referralDiscountAmount,
       referralCodeApplied: relationship?.referralCode || "",
       referralRelationshipId: relationship?._id || null,
-      addonProductId: addonProduct?._id || null,
-      addonProductCode: addonProduct?.code || "",
+      addonProductId: addonProducts.length === 1 ? addonProducts[0]._id : null,
+      addonProductCode: addonProducts.length === 1 ? addonProducts[0].code : "",
       addonBasePrice,
       addonFinalPrice,
       totalAmount,
@@ -1222,6 +1431,8 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
       metadata: {
         referralEligible,
         alreadyCompletedExamUnlock,
+        selectedAddonProductIds: addonProducts.map((product) => product._id),
+        selectedAddonProductCodes: addonProducts.map((product) => product.code),
       },
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -1285,7 +1496,9 @@ export const createExamPayPalOrder = catchAsync(async (req, res) => {
         examBasePrice,
         referralDiscountAmount,
         examFinalPrice,
-        addonProductCode: addonProduct?.code || null,
+        addonProductCode:
+          addonProducts.length === 1 ? addonProducts[0].code : null,
+        addonProductCodes: addonProducts.map((product) => product.code),
         addonFinalPrice,
         totalAmount,
       },
@@ -1370,16 +1583,17 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
   );
 
   let addonPurchase = null;
-  const addonSelection =
-    updatedAccess.addonProductId || updatedAccess.addonProductCode || null;
-  if (addonSelection) {
-    const addonProduct = await getUpgradeAddonProduct(addonSelection);
-    addonPurchase = await unlockAddonProductFromExamAccess({
+  let addonPurchases = [];
+  const addonSelections = getStoredAddonSelectionsFromDoc(updatedAccess);
+  if (addonSelections.length > 0) {
+    const addonProducts = await getUpgradeAddonProducts(addonSelections);
+    addonPurchases = await unlockAddonProductsFromExamAccess({
       userId,
-      addonProduct,
+      addonProducts,
       examAccess: updatedAccess,
       paymentFingerprint,
     });
+    addonPurchase = addonPurchases[0] || null;
   }
 
   sendResponse(res, {
@@ -1390,6 +1604,7 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
       unlocked: true,
       access: updatedAccess,
       addonPurchase,
+      addonPurchases,
     },
   });
 });
@@ -1397,7 +1612,7 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
 export const createProfessionalPlanOrder = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   const { examId } = req.body;
-  const addonSelection = getRequestedAddonSelection(req.body);
+  const addonSelection = getRequestedAddonSelections(req.body);
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
   if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
 
@@ -1412,7 +1627,7 @@ export const createProfessionalPlanOrder = catchAsync(async (req, res) => {
 
   const {
     pricing,
-    addonProduct,
+    addonProducts,
     planPurchase,
   } = await buildProfessionalPlanCheckoutContext({
     user,
@@ -1487,7 +1702,10 @@ export const createProfessionalPlanOrder = catchAsync(async (req, res) => {
         planBasePrice: planPurchase.planBasePrice,
         referralDiscountAmount: planPurchase.referralDiscountAmount,
         planFinalPrice: planPurchase.planFinalPrice,
-        addonProductCode: addonProduct?.code || null,
+        addonProductCode:
+          addonProducts.length === 1 ? addonProducts[0].code : null,
+        addonProductCodes:
+          planPurchase.metadata?.selectedAddonProductCodes || [],
         addonFinalPrice: planPurchase.addonFinalPrice || 0,
         totalAmount: planPurchase.totalAmount,
       },
@@ -1598,19 +1816,15 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
   planPurchase.purchasedAt = new Date();
   await planPurchase.save();
 
-  let addonProduct = null;
-  let addonResourcePurchase = null;
-  if (planPurchase.addonProductId) {
-    addonProduct = await ResourceProduct.findById(planPurchase.addonProductId);
-    if (addonProduct) {
-      addonResourcePurchase = await unlockAddonProductFromPlanPurchase({
-        userId,
-        addonProduct,
-        planPurchase,
-        paymentFingerprint: planPurchase.paymentAccountFingerprint,
-      });
-    }
-  }
+  const addonSelections = getStoredAddonSelectionsFromDoc(planPurchase);
+  const addonProducts = await getUpgradeAddonProducts(addonSelections);
+  const addonResourcePurchases = await unlockAddonProductsFromPlanPurchase({
+    userId,
+    addonProducts,
+    planPurchase,
+    paymentFingerprint: planPurchase.paymentAccountFingerprint,
+  });
+  const addonResourcePurchase = addonResourcePurchases[0] || null;
 
   await processReferralRewardForCompletedUpgrade({
     user,
@@ -1640,11 +1854,17 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
         referralDiscountAmount: planPurchase.referralDiscountAmount,
         planFinalPrice: planPurchase.planFinalPrice,
         addonProductCode: planPurchase.addonProductCode || null,
+        addonProductCodes:
+          planPurchase.metadata?.selectedAddonProductCodes || [],
         addonFinalPrice: planPurchase.addonFinalPrice || 0,
         totalAmount: planPurchase.totalAmount,
       },
-      addonUnlocked: Boolean(addonResourcePurchase),
-      addonProductCode: addonProduct?.code || null,
+      addonUnlocked: addonResourcePurchases.length > 0,
+      addonUnlockedCount: addonResourcePurchases.length,
+      addonProductCode:
+        addonProducts.length === 1 ? addonProducts[0].code : null,
+      addonProductCodes: addonProducts.map((product) => product.code),
+      addonPurchases: addonResourcePurchases,
       userResourceFlags: {
         has_api510_inspection_guide: Boolean(
           refreshedUser?.has_api510_inspection_guide
