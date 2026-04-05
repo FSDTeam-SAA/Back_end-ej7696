@@ -2087,13 +2087,6 @@ export const manualLockExam = catchAsync(async (req, res) => {
     });
   }
 
-  if (existingAccess.purchaseType !== "manual") {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "Only manually unlocked exams can be locked manually"
-    );
-  }
-
   existingAccess.status = "free";
   existingAccess.maxQuestionsPerSession = 2;
   existingAccess.purchasedAt = null;
