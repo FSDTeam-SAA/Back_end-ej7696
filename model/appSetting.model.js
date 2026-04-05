@@ -24,6 +24,10 @@ const appSettingSchema = new Schema(
         "All smart study tools",
       ],
     },
+    referralShareTemplate: {
+      type: String,
+      default: "",
+    },
   },
   { timestamps: true }
 );
