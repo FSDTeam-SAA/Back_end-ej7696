@@ -8,9 +8,11 @@ import {
   getMyReferredUsers,
   getPublicReferralCode,
   getReferralOverviewAdmin,
+  getReferralTemplateAdmin,
   listReferralUsageAdmin,
   listReferralPayoutRequestsAdmin,
   requestReferralCashPayout,
+  updateReferralTemplateAdmin,
   updateReferralPayoutRequestStatusAdmin,
 } from "../controller/referral.controller.js";
 import { protect, requirePermission } from "../middleware/auth.middleware.js";
@@ -32,6 +34,18 @@ router.get(
   protect,
   requirePermission("view_referral_analytics"),
   getReferralOverviewAdmin
+);
+router.get(
+  "/admin/template",
+  protect,
+  requirePermission("manage_referral_payouts"),
+  getReferralTemplateAdmin
+);
+router.patch(
+  "/admin/template",
+  protect,
+  requirePermission("manage_referral_payouts"),
+  updateReferralTemplateAdmin
 );
 router.get(
   "/admin/relationships",

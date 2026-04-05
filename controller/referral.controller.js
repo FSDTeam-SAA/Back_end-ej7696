@@ -34,6 +34,30 @@ const REFERRAL_SHARE_CHANNELS = [
   "facebook",
   "instagram",
 ];
+const DEFAULT_REFERRAL_SHARE_TEMPLATE = [
+  "I have been using Inspectors Path to practice for API certification exams.",
+  "",
+  "The app has realistic exam questions and full exam simulations that help you prepare for the real API exam.",
+  "",
+  "If you are studying for API 510, 570, 653 or any API exams, it is worth checking out.",
+  "",
+  "Use my referral code and get {discountPercent}% off your first Professional Plan purchase. When you complete that purchase, I also get a {commissionPercent}% referral commission bonus.",
+  "",
+  "Open this referral link:",
+  "{referralLink}",
+  "",
+  "Referral Code: {referralCode}",
+  "If the app is not installed yet, open the same link again after installation so the referral is attached automatically.",
+].join("\n");
+const REFERRAL_TEMPLATE_MAX_LENGTH = 4000;
+const REFERRAL_TEMPLATE_PLACEHOLDERS = [
+  "{referralCode}",
+  "{referralLink}",
+  "{discountPercent}",
+  "{commissionPercent}",
+  "{referralDiscountPercent}",
+  "{referralCommissionPercent}",
+];
 
 const normalizeCommissionRate = (value) => {
   const rate = Number(value);
@@ -43,43 +67,53 @@ const normalizeCommissionRate = (value) => {
   return rate;
 };
 
+const normalizeReferralShareTemplate = (value) => {
+  if (typeof value !== "string") {
+    return DEFAULT_REFERRAL_SHARE_TEMPLATE;
+  }
+  const normalized = value.replace(/\r\n/g, "\n").trim();
+  return normalized || DEFAULT_REFERRAL_SHARE_TEMPLATE;
+};
+
+const getReferralProgramSettings = async () => {
+  const settings = await AppSetting.findOne()
+    .select("referralCommissionRate referralShareTemplate")
+    .lean();
+  return {
+    referralCommissionRate: normalizeCommissionRate(settings?.referralCommissionRate),
+    referralShareTemplate: normalizeReferralShareTemplate(settings?.referralShareTemplate),
+  };
+};
+
 const getReferralCommissionRate = async () => {
-  const settings = await AppSetting.findOne().select("referralCommissionRate").lean();
-  return normalizeCommissionRate(settings?.referralCommissionRate);
+  const { referralCommissionRate } = await getReferralProgramSettings();
+  return referralCommissionRate;
 };
 
 const buildReferralShareMessage = ({
   referralCode,
   referralLink,
   referralCommissionRate,
+  referralShareTemplate,
 }) => {
-  const lines = [
-    "I have been using Inspectors Path to practice for API certification exams.",
-    "",
-    "The app has realistic exam questions and full exam simulations that help you prepare for the real API exam.",
-    "",
-    "If you are studying for API 510, 570, 653 or any API exams, it is worth checking out.",
-    "",
-    `Use my referral code and get ${Math.round(
-      referralCommissionRate * 100
-    )}% off your first Professional Plan purchase. When you complete that purchase, I also get a ${Math.round(
-      referralCommissionRate * 100
-    )}% referral commission bonus.`,
-    "",
-    "Open this referral link:",
-    referralLink,
-    "",
-    `Referral Code: ${referralCode}`,
-    "If the app is not installed yet, open the same link again after installation so the referral is attached automatically.",
-  ];
+  const percent = Math.round(referralCommissionRate * 100);
+  const template = normalizeReferralShareTemplate(referralShareTemplate);
 
-  return lines.join("\n").trim();
+  return template
+    .replace(/\{referralCode\}/gi, referralCode || "")
+    .replace(/\{referralLink\}/gi, referralLink || "")
+    .replace(/\{discountPercent\}/gi, String(percent))
+    .replace(/\{commissionPercent\}/gi, String(percent))
+    .replace(/\{referralDiscountPercent\}/gi, String(percent))
+    .replace(/\{referralCommissionPercent\}/gi, String(percent))
+    .trim();
 };
 
 const buildReferralProgramPayload = ({
   referralCode,
   referralLink,
   referralCommissionRate,
+  referralShareTemplate,
 }) => ({
   headline: REFERRAL_PROGRAM_HEADLINE,
   description: REFERRAL_PROGRAM_DESCRIPTION,
@@ -100,6 +134,7 @@ const buildReferralProgramPayload = ({
     referralCode,
     referralLink,
     referralCommissionRate,
+    referralShareTemplate,
   }),
 });
 
@@ -165,10 +200,11 @@ export const getMyReferralProfile = catchAsync(async (req, res) => {
   }
 
   const user = await ensureUserReferralIdentity(userId);
-  const [summary, referralCommissionRate] = await Promise.all([
+  const [summary, referralSettings] = await Promise.all([
     getReferralSummary(userId),
-    getReferralCommissionRate(),
+    getReferralProgramSettings(),
   ]);
+  const { referralCommissionRate, referralShareTemplate } = referralSettings;
   const referralLink = buildReferralLink(
     user.referralCode,
     resolveRequestBaseUrl(req)
@@ -177,6 +213,7 @@ export const getMyReferralProfile = catchAsync(async (req, res) => {
     referralCode: user.referralCode,
     referralLink,
     referralCommissionRate,
+    referralShareTemplate,
   });
 
   sendResponse(res, {
@@ -201,7 +238,8 @@ export const getMyReferralProgram = catchAsync(async (req, res) => {
   }
 
   const user = await ensureUserReferralIdentity(userId);
-  const referralCommissionRate = await getReferralCommissionRate();
+  const { referralCommissionRate, referralShareTemplate } =
+    await getReferralProgramSettings();
   const referralLink = buildReferralLink(
     user.referralCode,
     resolveRequestBaseUrl(req)
@@ -215,6 +253,7 @@ export const getMyReferralProgram = catchAsync(async (req, res) => {
       referralCode: user.referralCode,
       referralLink,
       referralCommissionRate,
+      referralShareTemplate,
     }),
   });
 });
@@ -447,6 +486,57 @@ export const getReferralOverviewAdmin = catchAsync(async (_req, res) => {
       totalSharedReferrals,
       totalUsedReferrals,
       totalEarnings,
+    },
+  });
+});
+
+export const getReferralTemplateAdmin = catchAsync(async (_req, res) => {
+  const settings = await AppSetting.findOne().select("referralShareTemplate").lean();
+  const template = normalizeReferralShareTemplate(settings?.referralShareTemplate);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Referral share template fetched",
+    data: {
+      template,
+      placeholders: REFERRAL_TEMPLATE_PLACEHOLDERS,
+      maxLength: REFERRAL_TEMPLATE_MAX_LENGTH,
+    },
+  });
+});
+
+export const updateReferralTemplateAdmin = catchAsync(async (req, res) => {
+  if (typeof req.body?.template !== "string") {
+    throw new AppError(httpStatus.BAD_REQUEST, "template is required");
+  }
+
+  const template = req.body.template.replace(/\r\n/g, "\n").trim();
+  if (!template) {
+    throw new AppError(httpStatus.BAD_REQUEST, "template cannot be empty");
+  }
+
+  if (template.length > REFERRAL_TEMPLATE_MAX_LENGTH) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `template cannot exceed ${REFERRAL_TEMPLATE_MAX_LENGTH} characters`
+    );
+  }
+
+  const settings = await AppSetting.findOneAndUpdate(
+    {},
+    { referralShareTemplate: template },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  ).lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Referral share template updated",
+    data: {
+      template: normalizeReferralShareTemplate(settings?.referralShareTemplate),
+      placeholders: REFERRAL_TEMPLATE_PLACEHOLDERS,
+      maxLength: REFERRAL_TEMPLATE_MAX_LENGTH,
     },
   });
 });
