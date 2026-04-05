@@ -129,6 +129,57 @@ const buildPayPalPaymentAccountFingerprint = (captureData) => {
   return token ? `paypal:${token}` : "";
 };
 
+const formatCardBrand = (value) => {
+  const text = value?.toString().trim() || "";
+  if (!text) return "";
+  return text
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+};
+
+const buildStripePaymentMethodLabel = (paymentIntent) => {
+  const paymentMethod = paymentIntent?.payment_method;
+  const latestCharge = paymentIntent?.latest_charge;
+  const paymentMethodCard = paymentMethod?.card;
+  const chargeCard = latestCharge?.payment_method_details?.card;
+  const card = paymentMethodCard || chargeCard;
+  if (!card) return "Card";
+
+  const brand = formatCardBrand(card.brand);
+  const last4 = card.last4?.toString().trim() || "";
+  if (brand && last4) return `${brand} ending in ${last4}`;
+  if (last4) return `Card ending in ${last4}`;
+  return brand || "Card";
+};
+
+const buildStripeReceiptNumber = (paymentIntent) => {
+  const latestCharge = paymentIntent?.latest_charge;
+  return (
+    latestCharge?.receipt_number?.toString().trim() ||
+    latestCharge?.id?.toString().trim() ||
+    paymentIntent?.id?.toString().trim() ||
+    ""
+  );
+};
+
+const buildStripeTransactionReference = (paymentIntent) =>
+  paymentIntent?.id?.toString().trim() || "";
+
+const buildPayPalPaymentMethodLabel = () => "PayPal";
+
+const buildPayPalReceiptNumber = (captureData, orderId = "") =>
+  captureData?.purchase_units?.[0]?.payments?.captures?.[0]?.id?.toString().trim() ||
+  orderId?.toString().trim() ||
+  "";
+
+const buildPayPalTransactionReference = (captureData, orderId = "") =>
+  captureData?.id?.toString().trim() ||
+  captureData?.purchase_units?.[0]?.payments?.captures?.[0]?.id?.toString().trim() ||
+  orderId?.toString().trim() ||
+  "";
+
 const getUpgradeAddonProduct = async (addonProductCodeOrId) => {
   if (!addonProductCodeOrId) return null;
 
@@ -1044,7 +1095,9 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
   }
 
   const stripe = getStripeClient();
-  const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+  const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
+    expand: ["latest_charge", "payment_method"],
+  });
 
   if (paymentIntent?.metadata?.examId !== examId.toString()) {
     throw new AppError(httpStatus.BAD_REQUEST, "Payment intent does not match exam");
@@ -1100,6 +1153,15 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
     message: "Exam unlocked",
     data: {
       unlocked: true,
+      purchaseType: "exam",
+      title: "Exam Unlock",
+      amountPaid: updatedAccess.purchasePrice || updatedAccess.totalAmount || 0,
+      currency: updatedAccess.currency || DEFAULT_CURRENCY,
+      paymentMethodLabel: buildStripePaymentMethodLabel(paymentIntent),
+      receiptNumber: buildStripeReceiptNumber(paymentIntent),
+      transactionReference: buildStripeTransactionReference(paymentIntent),
+      paidAt: updatedAccess.purchasedAt,
+      provider: "stripe",
       access: updatedAccess,
       addonPurchase,
       addonPurchases,
@@ -1248,7 +1310,9 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
     }
 
     const stripe = getStripeClient();
-    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {
+      expand: ["latest_charge", "payment_method"],
+    });
 
     if (paymentIntent?.metadata?.userId !== userId.toString()) {
       throw new AppError(httpStatus.BAD_REQUEST, "Payment intent does not match user");
@@ -1327,6 +1391,17 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
       message: "Professional plan activated",
       data: {
         unlocked: true,
+        purchaseType: "plan",
+        title: "Professional Plan",
+        amountPaid: planPurchase.totalAmount,
+        currency: planPurchase.currency || DEFAULT_CURRENCY,
+        billingCycleLabel: `${PROFESSIONAL_SUBSCRIPTION_MONTHS} months`,
+        nextBillingDate: subscriptionExpiresAt,
+        paymentMethodLabel: buildStripePaymentMethodLabel(paymentIntent),
+        receiptNumber: buildStripeReceiptNumber(paymentIntent),
+        transactionReference: buildStripeTransactionReference(paymentIntent),
+        paidAt: planPurchase.purchasedAt,
+        provider: "stripe",
         access: updatedAccess,
         planPurchaseId: planPurchase._id,
         pricingBreakdown: {
@@ -1602,6 +1677,15 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
     message: "Exam unlocked",
     data: {
       unlocked: true,
+      purchaseType: "exam",
+      title: "Exam Unlock",
+      amountPaid: updatedAccess.purchasePrice || updatedAccess.totalAmount || 0,
+      currency: updatedAccess.currency || DEFAULT_CURRENCY,
+      paymentMethodLabel: buildPayPalPaymentMethodLabel(),
+      receiptNumber: buildPayPalReceiptNumber(captureData, orderId),
+      transactionReference: buildPayPalTransactionReference(captureData, orderId),
+      paidAt: updatedAccess.purchasedAt,
+      provider: "paypal",
       access: updatedAccess,
       addonPurchase,
       addonPurchases,
@@ -1842,6 +1926,17 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
     message: "Professional plan activated",
     data: {
       unlocked: true,
+      purchaseType: "plan",
+      title: "Professional Plan",
+      amountPaid: planPurchase.totalAmount,
+      currency: planPurchase.currency || DEFAULT_CURRENCY,
+      billingCycleLabel: `${PROFESSIONAL_SUBSCRIPTION_MONTHS} months`,
+      nextBillingDate: subscriptionExpiresAt,
+      paymentMethodLabel: buildPayPalPaymentMethodLabel(),
+      receiptNumber: buildPayPalReceiptNumber(captureData, orderId),
+      transactionReference: buildPayPalTransactionReference(captureData, orderId),
+      paidAt: planPurchase.purchasedAt,
+      provider: "paypal",
       access: updatedAccess,
       planPurchaseId: planPurchase._id,
       pricingBreakdown: {
