@@ -14,7 +14,9 @@ import {
   listPurchases,
   listProfessionalPlanPurchases,
   manualLockExam,
+  manualLockExamsBulk,
   manualUnlockExam,
+  manualUnlockExamsBulk,
   updateProfessionalPlanPurchaseStatus,
   updatePricingSettings,
 } from "../controller/payment.controller.js";
@@ -45,6 +47,8 @@ router.post(
   confirmProfessionalPlanStripePayment
 );
 router.get("/plan/professional", optionalProtect, getProfessionalPlan);
+router.post("/admin/exams/unlock-bulk", protect, requirePermission("manual_exam_unlocks"), manualUnlockExamsBulk);
+router.post("/admin/exams/lock-bulk", protect, requirePermission("manual_exam_unlocks"), manualLockExamsBulk);
 router.post("/admin/exam/:examId/unlock", protect, requirePermission("manual_exam_unlocks"), manualUnlockExam);
 router.post("/admin/exam/:examId/lock", protect, requirePermission("manual_exam_unlocks"), manualLockExam);
 router.get("/admin/pricing", protect, requirePermission("manage_subscription"), getPricingSettings);

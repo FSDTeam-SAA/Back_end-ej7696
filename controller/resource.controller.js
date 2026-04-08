@@ -10,11 +10,13 @@ import { ResourceProduct } from "../model/resourceProduct.model.js";
 import { ResourcePurchase } from "../model/resourcePurchase.model.js";
 import {
   applyResourceUnlocksToUser,
+  getUnlockCodesForProduct,
   getResourceProductOrThrow,
   getUnlockedResourceCodeSet,
   getUpgradeAddOnOptions,
   isResourceUnlockedForUser,
   normalizeProductCode,
+  persistUserResourceUnlockCodes,
   resolveResourceRevenueTag,
   roundCurrency,
 } from "../utils/resource.service.js";
@@ -93,6 +95,25 @@ const parseBundleIncludes = (value) => {
   }
 
   return [];
+};
+
+const parseObjectIdList = (value, fieldName) => {
+  const rawItems = Array.isArray(value) ? value : [value];
+  const ids = [...new Set(rawItems.map((item) => item?.toString().trim()).filter(Boolean))];
+
+  if (!ids.length) {
+    throw new AppError(httpStatus.BAD_REQUEST, `${fieldName} is required`);
+  }
+
+  const invalidIds = ids.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+  if (invalidIds.length) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Invalid ${fieldName}: ${invalidIds.join(", ")}`
+    );
+  }
+
+  return ids;
 };
 
 const buildProductCodeSeed = (value) =>
@@ -457,6 +478,19 @@ const getUserResourceAccess = (user) => ({
   resourceUnlocks: user?.resourceUnlocks || [],
 });
 
+const getResourceProductForAdminOrThrow = async (productId) => {
+  if (!productId || !mongoose.Types.ObjectId.isValid(productId)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Valid productId is required");
+  }
+
+  const product = await ResourceProduct.findById(productId);
+  if (!product) {
+    throw new AppError(httpStatus.NOT_FOUND, "Resource product not found");
+  }
+
+  return product;
+};
+
 const fetchResourceStorePayload = async (userId, categoryId = "") => {
   const normalizedCategoryId = categoryId?.toString().trim() || "";
   const categoryFilter = { isActive: true };
@@ -605,6 +639,250 @@ export const getMyResourceUnlocks = catchAsync(async (req, res) => {
     success: true,
     message: "Resource unlocks fetched",
     data: getUserResourceAccess(user),
+  });
+});
+
+export const unlockResourceProductForUserAdmin = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const { productId } = req.params;
+
+  if (!userId || !productId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId and productId are required");
+  }
+
+  const [user, product] = await Promise.all([
+    User.findById(userId),
+    getResourceProductForAdminOrThrow(productId),
+  ]);
+
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  const purchase = await ResourcePurchase.create({
+    userId,
+    categoryId: product.categoryId,
+    productId: product._id,
+    productCode: product.code,
+    purchaseType: "manual",
+    provider: "manual",
+    status: "completed",
+    revenueTag: resolveResourceRevenueTag("manual", product.code),
+    currency: product.currency || "USD",
+    basePrice: 0,
+    finalPrice: 0,
+    referralDiscountRate: 0,
+    referralDiscountAmount: 0,
+    discountAmount: 0,
+    referralCodeApplied: "",
+    referralRelationshipId: null,
+    metadata: {
+      flow: "admin_manual_unlock",
+      adminUserId: req.user?._id || null,
+    },
+    purchasedAt: new Date(),
+  });
+
+  const updatedUser = await applyResourceUnlocksToUser({
+    userId,
+    product,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource unlocked manually",
+    data: {
+      unlocked: true,
+      purchase,
+      product: {
+        id: product._id,
+        code: product.code,
+        title: product.title,
+      },
+      userAccess: getUserResourceAccess(updatedUser),
+    },
+  });
+});
+
+export const unlockResourceProductsForUserAdminBulk = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const productIds = parseObjectIdList(req.body?.productIds, "productIds");
+
+  if (!userId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId is required");
+  }
+
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  const products = await ResourceProduct.find({ _id: { $in: productIds } });
+  if (products.length !== productIds.length) {
+    const foundIds = new Set(products.map((product) => product._id.toString()));
+    const missingIds = productIds.filter((productId) => !foundIds.has(productId));
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      `Resource product not found: ${missingIds.join(", ")}`
+    );
+  }
+
+  const updatedUnlockCodes = new Set(getUnlockedResourceCodeSet(user));
+  products.forEach((product) => {
+    getUnlockCodesForProduct(product).forEach((code) => updatedUnlockCodes.add(code));
+  });
+
+  const purchasedAt = new Date();
+  const purchases = await ResourcePurchase.insertMany(
+    products.map((product) => ({
+      userId,
+      categoryId: product.categoryId,
+      productId: product._id,
+      productCode: product.code,
+      purchaseType: "manual",
+      provider: "manual",
+      status: "completed",
+      revenueTag: resolveResourceRevenueTag("manual", product.code),
+      currency: product.currency || "USD",
+      basePrice: 0,
+      finalPrice: 0,
+      referralDiscountRate: 0,
+      referralDiscountAmount: 0,
+      discountAmount: 0,
+      referralCodeApplied: "",
+      referralRelationshipId: null,
+      metadata: {
+        flow: "admin_manual_unlock_bulk",
+        adminUserId: req.user?._id || null,
+      },
+      purchasedAt,
+    }))
+  );
+
+  const updatedUser = await persistUserResourceUnlockCodes({
+    userId,
+    unlockCodes: updatedUnlockCodes,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resources unlocked manually",
+    data: {
+      userId,
+      productIds,
+      count: purchases.length,
+      purchases,
+      userAccess: getUserResourceAccess(updatedUser),
+    },
+  });
+});
+
+export const lockResourceProductForUserAdmin = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const { productId } = req.params;
+
+  if (!userId || !productId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId and productId are required");
+  }
+
+  const [user, product] = await Promise.all([
+    User.findById(userId),
+    getResourceProductForAdminOrThrow(productId),
+  ]);
+
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  const nextUnlockCodes = new Set(getUnlockedResourceCodeSet(user));
+  const codesToRemove = getUnlockCodesForProduct(product);
+  const hadAnyUnlock = codesToRemove.some((code) => nextUnlockCodes.has(code));
+
+  if (!hadAnyUnlock) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Resource already locked",
+      data: {
+        locked: true,
+        product: {
+          id: product._id,
+          code: product.code,
+          title: product.title,
+        },
+        userAccess: getUserResourceAccess(user),
+      },
+    });
+  }
+
+  codesToRemove.forEach((code) => nextUnlockCodes.delete(code));
+  const updatedUser = await persistUserResourceUnlockCodes({
+    userId,
+    unlockCodes: nextUnlockCodes,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resource locked manually",
+    data: {
+      locked: true,
+      product: {
+        id: product._id,
+        code: product.code,
+        title: product.title,
+      },
+      userAccess: getUserResourceAccess(updatedUser),
+    },
+  });
+});
+
+export const lockResourceProductsForUserAdminBulk = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const productIds = parseObjectIdList(req.body?.productIds, "productIds");
+
+  if (!userId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId is required");
+  }
+
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  const products = await ResourceProduct.find({ _id: { $in: productIds } });
+  if (products.length !== productIds.length) {
+    const foundIds = new Set(products.map((product) => product._id.toString()));
+    const missingIds = productIds.filter((productId) => !foundIds.has(productId));
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      `Resource product not found: ${missingIds.join(", ")}`
+    );
+  }
+
+  const nextUnlockCodes = new Set(getUnlockedResourceCodeSet(user));
+  products.forEach((product) => {
+    getUnlockCodesForProduct(product).forEach((code) => nextUnlockCodes.delete(code));
+  });
+
+  const updatedUser = await persistUserResourceUnlockCodes({
+    userId,
+    unlockCodes: nextUnlockCodes,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Resources locked manually",
+    data: {
+      userId,
+      productIds,
+      count: productIds.length,
+      locked: true,
+      userAccess: getUserResourceAccess(updatedUser),
+    },
   });
 });
 

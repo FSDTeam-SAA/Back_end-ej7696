@@ -13,6 +13,7 @@ import {
   clearUserInstallationSession,
   getUserExamReviews,
   getMyInstallationSession,
+  getMyUnlocks,
   updateProfile,
   getUserInstallationSession,
 } from "../controller/user.controller.js";
@@ -24,6 +25,7 @@ const router = express.Router();
 router.get("/", protect, requirePermission("view_user_list"), getUsers);
 router.get("/profile", protect, getProfile);
 router.get("/profile/installation-session", protect, getMyInstallationSession);
+router.get("/profile/unlocks", protect, getMyUnlocks);
 router.put("/profile", protect, upload.single("avatar"), updateProfile);
 router.put("/password", protect, changePassword);
 router.get(

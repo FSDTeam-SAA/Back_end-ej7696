@@ -71,6 +71,25 @@ const ZERO_DECIMAL_CURRENCIES = new Set([
   "XPF",
 ]);
 
+const parseObjectIdList = (value, fieldName) => {
+  const rawItems = Array.isArray(value) ? value : [value];
+  const ids = [...new Set(rawItems.map((item) => item?.toString().trim()).filter(Boolean))];
+
+  if (!ids.length) {
+    throw new AppError(httpStatus.BAD_REQUEST, `${fieldName} is required`);
+  }
+
+  const invalidIds = ids.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+  if (invalidIds.length) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Invalid ${fieldName}: ${invalidIds.join(", ")}`
+    );
+  }
+
+  return ids;
+};
+
 const getPricing = async () => {
   const settings = await AppSetting.findOne().lean();
   const referralCommissionRate = Number(settings?.referralCommissionRate);
@@ -2064,6 +2083,67 @@ export const manualUnlockExam = catchAsync(async (req, res) => {
   });
 });
 
+export const manualUnlockExamsBulk = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const examIds = parseObjectIdList(req.body?.examIds, "examIds");
+
+  if (!userId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId is required");
+  }
+
+  const user = await User.findById(userId).select("_id").lean();
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  const exams = await Exam.find({ _id: { $in: examIds } }).select("_id name").lean();
+  if (exams.length !== examIds.length) {
+    const foundIds = new Set(exams.map((exam) => exam._id.toString()));
+    const missingIds = examIds.filter((examId) => !foundIds.has(examId));
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      `Exam not found: ${missingIds.join(", ")}`
+    );
+  }
+
+  const unlockedAt = new Date();
+
+  await ExamAccess.bulkWrite(
+    examIds.map((examId) => ({
+      updateOne: {
+        filter: { userId, examId },
+        update: {
+          userId,
+          examId,
+          status: "unlocked",
+          paymentStatus: "manual",
+          purchaseType: "manual",
+          purchasePrice: 0,
+          maxQuestionsPerSession: 30,
+          purchasedAt: unlockedAt,
+        },
+        upsert: true,
+        setDefaultsOnInsert: true,
+      },
+    }))
+  );
+
+  const unlockedAccesses = await ExamAccess.find({
+    userId,
+    examId: { $in: examIds },
+  }).lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exams unlocked manually",
+    data: {
+      userId,
+      examIds,
+      count: unlockedAccesses.length,
+      unlocks: unlockedAccesses,
+    },
+  });
+});
+
 export const manualLockExam = catchAsync(async (req, res) => {
   const { userId } = req.body;
   const examId = req.params.examId;
@@ -2097,6 +2177,55 @@ export const manualLockExam = catchAsync(async (req, res) => {
     success: true,
     message: "Exam locked manually",
     data: existingAccess,
+  });
+});
+
+export const manualLockExamsBulk = catchAsync(async (req, res) => {
+  const { userId } = req.body;
+  const examIds = parseObjectIdList(req.body?.examIds, "examIds");
+
+  if (!userId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "userId is required");
+  }
+
+  const user = await User.findById(userId).select("_id").lean();
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  const exams = await Exam.find({ _id: { $in: examIds } }).select("_id name").lean();
+  if (exams.length !== examIds.length) {
+    const foundIds = new Set(exams.map((exam) => exam._id.toString()));
+    const missingIds = examIds.filter((examId) => !foundIds.has(examId));
+    throw new AppError(
+      httpStatus.NOT_FOUND,
+      `Exam not found: ${missingIds.join(", ")}`
+    );
+  }
+
+  await ExamAccess.bulkWrite(
+    examIds.map((examId) => ({
+      updateOne: {
+        filter: { userId, examId, status: "unlocked" },
+        update: {
+          $set: {
+            status: "free",
+            maxQuestionsPerSession: 2,
+            purchasedAt: null,
+          },
+        },
+      },
+    }))
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exams locked manually",
+    data: {
+      userId,
+      examIds,
+      count: examIds.length,
+      locked: true,
+    },
   });
 });
 

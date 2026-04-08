@@ -29,8 +29,25 @@ export const getUpgradeCheckoutPrice = (product) => {
   return roundCurrency(product?.originalPrice ?? 0);
 };
 
-const asUniqueStringArray = (items = []) =>
-  [...new Set((items || []).map((i) => i?.toString().trim().toLowerCase()).filter(Boolean))];
+const asUniqueStringArray = (items = []) => {
+  const normalizedItems = Array.isArray(items)
+    ? items
+    : items instanceof Set
+      ? [...items]
+      : typeof items === "string" || typeof items === "number"
+        ? [items]
+        : items && typeof items[Symbol.iterator] === "function"
+          ? [...items]
+          : [];
+
+  return [
+    ...new Set(
+      normalizedItems
+        .map((i) => i?.toString().trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  ];
+};
 
 export const getUpgradeAddOnOptions = async () => {
   const options = await ResourceProduct.find({
@@ -71,18 +88,26 @@ export const getResourceProductOrThrow = async ({ productId, productCode }) => {
 };
 
 export const getUnlockedResourceCodeSet = (user) => {
-  const unlocked = new Set(asUniqueStringArray(user?.resourceUnlocks));
+  const explicitUnlocks = asUniqueStringArray(user?.resourceUnlocks);
+  const unlocked = new Set(explicitUnlocks);
+  const hasInspectionGuide = Boolean(user?.has_api510_inspection_guide);
+  const hasReportGuide = Boolean(user?.has_api510_report_guide);
+  const hasBundle = Boolean(user?.has_api510_bundle);
 
-  if (user?.has_api510_inspection_guide) {
+  if (hasInspectionGuide) {
     unlocked.add(RESOURCE_PRODUCT_CODES.API510_INSPECTION_GUIDE);
   }
-  if (user?.has_api510_report_guide) {
+  if (hasReportGuide) {
     unlocked.add(RESOURCE_PRODUCT_CODES.API510_REPORT_GUIDE);
   }
-  if (user?.has_api510_bundle) {
+  if (hasBundle) {
     unlocked.add(RESOURCE_PRODUCT_CODES.API510_BUNDLE);
-    unlocked.add(RESOURCE_PRODUCT_CODES.API510_INSPECTION_GUIDE);
-    unlocked.add(RESOURCE_PRODUCT_CODES.API510_REPORT_GUIDE);
+
+    // Preserve legacy users that only had the bundle flag populated.
+    if (!explicitUnlocks.length && !hasInspectionGuide && !hasReportGuide) {
+      unlocked.add(RESOURCE_PRODUCT_CODES.API510_INSPECTION_GUIDE);
+      unlocked.add(RESOURCE_PRODUCT_CODES.API510_REPORT_GUIDE);
+    }
   }
 
   return unlocked;
@@ -107,34 +132,57 @@ export const isResourceUnlockedForUser = (user, product) => {
   return unlocked.has(normalizeProductCode(product?.code));
 };
 
-export const applyResourceUnlocksToUser = async ({ userId, product }) => {
-  const user = await User.findById(userId);
+const buildUserResourceUnlockState = (unlockCodes) => {
+  const normalizedCodes = new Set(asUniqueStringArray(unlockCodes));
+
+  return {
+    resourceUnlocks: [...normalizedCodes],
+    has_api510_bundle: normalizedCodes.has(RESOURCE_PRODUCT_CODES.API510_BUNDLE),
+    has_api510_inspection_guide: normalizedCodes.has(
+      RESOURCE_PRODUCT_CODES.API510_INSPECTION_GUIDE
+    ),
+    has_api510_report_guide: normalizedCodes.has(
+      RESOURCE_PRODUCT_CODES.API510_REPORT_GUIDE
+    ),
+  };
+};
+
+export const setUserResourceUnlockCodes = (user, unlockCodes) => {
+  Object.assign(user, buildUserResourceUnlockState(unlockCodes));
+  return user;
+};
+
+export const persistUserResourceUnlockCodes = async ({ userId, unlockCodes }) => {
+  const update = buildUserResourceUnlockState(unlockCodes);
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $set: update },
+    { new: true }
+  );
   if (!user) {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
+  return user;
+};
 
-  const unlockCodes = getUnlockCodesForProduct(product);
-  const nextCodes = new Set(getUnlockedResourceCodeSet(user));
-  unlockCodes.forEach((code) => nextCodes.add(code));
+export const applyResourceUnlocksToUser = async ({ userId, product }) => {
+  const unlockCodes = asUniqueStringArray(getUnlockCodesForProduct(product));
+  const nextFlags = buildUserResourceUnlockState(unlockCodes);
+  const update = {
+    $addToSet: {
+      resourceUnlocks: { $each: unlockCodes },
+    },
+    $set: {
+      has_api510_bundle: nextFlags.has_api510_bundle,
+      has_api510_inspection_guide: nextFlags.has_api510_inspection_guide,
+      has_api510_report_guide: nextFlags.has_api510_report_guide,
+    },
+  };
 
-  user.resourceUnlocks = [...nextCodes];
-
-  if (nextCodes.has(RESOURCE_PRODUCT_CODES.API510_BUNDLE)) {
-    user.has_api510_bundle = true;
+  const user = await User.findByIdAndUpdate(userId, update, { new: true });
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
-  if (nextCodes.has(RESOURCE_PRODUCT_CODES.API510_INSPECTION_GUIDE)) {
-    user.has_api510_inspection_guide = true;
-  }
-  if (nextCodes.has(RESOURCE_PRODUCT_CODES.API510_REPORT_GUIDE)) {
-    user.has_api510_report_guide = true;
-  }
-
-  if (user.has_api510_bundle) {
-    user.has_api510_inspection_guide = true;
-    user.has_api510_report_guide = true;
-  }
-
-  await user.save();
   return user;
 };
 
