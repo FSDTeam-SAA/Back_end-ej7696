@@ -11,11 +11,15 @@ import {
   getMyResourceUnlocks,
   getPurchasedResourceContent,
   getResourcePreview,
+  lockResourceProductForUserAdmin,
+  lockResourceProductsForUserAdminBulk,
   listResourceCategoriesAdmin,
   listResourcePurchasesAdmin,
   listResourceProductsAdmin,
   listResourceStore,
   listUpgradeAddOnOptions,
+  unlockResourceProductForUserAdmin,
+  unlockResourceProductsForUserAdminBulk,
   updateResourceCategoryAdmin,
   updateResourceProductAdmin,
 } from "../controller/resource.controller.js";
@@ -34,6 +38,31 @@ router.post("/purchase/stripe/create", protect, createResourceStripePaymentInten
 router.post("/purchase/stripe/confirm", protect, confirmResourceStripePayment);
 router.post("/purchase/paypal/create", protect, createResourcePayPalOrder);
 router.post("/purchase/paypal/capture", protect, captureResourcePayPalOrder);
+router.post(
+  "/admin/products/unlock-bulk",
+  protect,
+  requirePermission("manage_resource_store"),
+  unlockResourceProductsForUserAdminBulk
+);
+router.post(
+  "/admin/products/lock-bulk",
+  protect,
+  requirePermission("manage_resource_store"),
+  lockResourceProductsForUserAdminBulk
+);
+
+router.post(
+  "/admin/products/:productId/unlock",
+  protect,
+  requirePermission("manage_resource_store"),
+  unlockResourceProductForUserAdmin
+);
+router.post(
+  "/admin/products/:productId/lock",
+  protect,
+  requirePermission("manage_resource_store"),
+  lockResourceProductForUserAdmin
+);
 
 router.get(
   "/admin/categories",

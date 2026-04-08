@@ -4,12 +4,19 @@ import { ExamAccess } from "../model/examAccess.model.js";
 import { Exam } from "../model/exam.model.js";
 import { ExamAttempt } from "../model/examAttempt.model.js";
 import { ExamRating } from "../model/examRating.model.js";
+import { ResourceProduct } from "../model/resourceProduct.model.js";
+import { ResourcePurchase } from "../model/resourcePurchase.model.js";
 import { generateOTP, uploadOnCloudinary } from "../utils/commonMethod.js";
 import AppError from "../errors/AppError.js";
 import sendResponse from "../utils/sendResponse.js";
 import catchAsync from "../utils/catchAsync.js";
 import { createToken } from "../utils/authToken.js";
 import { sendEmail } from "../utils/sendEmail.js";
+import {
+  getUnlockCodesForProduct,
+  getUnlockedResourceCodeSet,
+  normalizeProductCode,
+} from "../utils/resource.service.js";
 
 const safeUserSelect =
   "-password -refreshToken -verificationInfo -password_reset_token";
@@ -114,6 +121,165 @@ const buildInstallationSessionData = (user) => ({
   hasActiveInstallation: Boolean(user.activeDeviceId || user.activeInstallationId),
 });
 
+const buildExamUnlockSummary = ({ access, examMap, user }) => {
+  const unlockDate = access?.purchasedAt || null;
+  const fallbackExpiresAt = unlockDate
+    ? addMonths(unlockDate, PROFESSIONAL_SUBSCRIPTION_MONTHS)
+    : null;
+  const expiresAt =
+    access?.purchaseType === "plan"
+      ? user?.subscriptionExpiresAt || fallbackExpiresAt
+      : fallbackExpiresAt;
+  const isExpired = expiresAt
+    ? new Date(expiresAt).getTime() <= Date.now()
+    : false;
+
+  return {
+    examId: access.examId,
+    examName: examMap[access.examId?.toString()] || null,
+    purchaseType: access.purchaseType || null,
+    paymentStatus: access.paymentStatus || null,
+    unlockDate,
+    purchasedAt: unlockDate,
+    expiresAt,
+    expiryMonths: PROFESSIONAL_SUBSCRIPTION_MONTHS,
+    isExpired,
+  };
+};
+
+const RESOURCE_SOURCE_LABELS = {
+  manual: "Manual unlock",
+  single: "Paid unlock",
+  bundle: "Paid bundle",
+  professional_upgrade_addon: "Plan upgrade add-on",
+  exam_unlock_addon: "Exam unlock add-on",
+};
+
+const getResourceUnlockSourceLabel = (purchaseType) =>
+  RESOURCE_SOURCE_LABELS[purchaseType] || "Paid/plan-based";
+
+const buildUnlockedResources = async (user) => {
+  const unlockedCodeSet = getUnlockedResourceCodeSet(user);
+  const unlockedCodes = [...unlockedCodeSet];
+
+  if (!unlockedCodes.length) {
+    return {
+      resourceUnlocks: [],
+      unlockedResources: [],
+      unlockedResourceCount: 0,
+    };
+  }
+
+  const [products, purchases] = await Promise.all([
+    ResourceProduct.find({
+      $or: [
+        { code: { $in: unlockedCodes } },
+        { bundleIncludes: { $in: unlockedCodes } },
+      ],
+    })
+      .populate("categoryId", "title slug")
+      .lean(),
+    ResourcePurchase.find({
+      userId: user._id,
+      status: "completed",
+    })
+      .sort({ purchasedAt: -1, createdAt: -1 })
+      .populate({
+        path: "productId",
+        select: "title code isBundle bundleIncludes categoryId",
+        populate: { path: "categoryId", select: "title slug" },
+      })
+      .lean(),
+  ]);
+
+  const productByCode = new Map();
+  products.forEach((product) => {
+    const code = normalizeProductCode(product?.code);
+    if (!code) return;
+    productByCode.set(code, product);
+  });
+
+  const unlockInfoByCode = new Map();
+  purchases.forEach((purchase) => {
+    const purchaseProduct =
+      purchase?.productId && typeof purchase.productId === "object"
+        ? purchase.productId
+        : null;
+    const purchaseProductCode = normalizeProductCode(
+      purchaseProduct?.code || purchase?.productCode
+    );
+
+    if (!purchaseProductCode) return;
+
+    const grantedCodes = purchaseProduct
+      ? getUnlockCodesForProduct(purchaseProduct)
+      : [purchaseProductCode];
+
+    grantedCodes.forEach((code) => {
+      if (!unlockedCodeSet.has(code) || unlockInfoByCode.has(code)) return;
+
+      unlockInfoByCode.set(code, {
+        purchaseType: purchase.purchaseType || null,
+        provider: purchase.provider || null,
+        status: purchase.status || null,
+        purchasedAt: purchase.purchasedAt || purchase.createdAt || null,
+        sourceProductCode: purchaseProductCode,
+        sourceProductTitle:
+          purchaseProduct?.title ||
+          productByCode.get(purchaseProductCode)?.title ||
+          purchaseProductCode,
+        isInherited: code !== purchaseProductCode,
+      });
+    });
+  });
+
+  const unlockedResources = unlockedCodes
+    .map((code) => {
+      const product = productByCode.get(code) || null;
+      const unlockInfo = unlockInfoByCode.get(code) || null;
+      const category =
+        product?.categoryId && typeof product.categoryId === "object"
+          ? product.categoryId
+          : null;
+      const isManual = !unlockInfo || unlockInfo.purchaseType === "manual";
+
+      return {
+        productId: product?._id || null,
+        productCode: code,
+        title: product?.title || code,
+        categoryId: category?._id || product?.categoryId || null,
+        categoryTitle: category?.title || "",
+        isBundle: Boolean(product?.isBundle),
+        isManual,
+        unlockMode: isManual ? "manual" : "paid_or_plan",
+        sourceLabel: isManual
+          ? "Manual unlock"
+          : getResourceUnlockSourceLabel(unlockInfo?.purchaseType),
+        purchaseType: unlockInfo?.purchaseType || "manual",
+        provider: unlockInfo?.provider || (isManual ? "manual" : null),
+        status: unlockInfo?.status || (isManual ? "completed" : null),
+        purchasedAt: unlockInfo?.purchasedAt || null,
+        sourceProductCode: unlockInfo?.sourceProductCode || code,
+        sourceProductTitle:
+          unlockInfo?.sourceProductTitle || product?.title || code,
+        inheritedFromBundle: Boolean(unlockInfo?.isInherited),
+      };
+    })
+    .sort((a, b) => {
+      const byCategory = String(a.categoryTitle || "").localeCompare(
+        String(b.categoryTitle || "")
+      );
+      if (byCategory !== 0) return byCategory;
+      return String(a.title || "").localeCompare(String(b.title || ""));
+    });
+
+  return {
+    resourceUnlocks: unlockedCodes,
+    unlockedResources,
+    unlockedResourceCount: unlockedResources.length,
+  };
+};
+
 export const getProfile = catchAsync(async (req, res) => {
   const user = await User.findById(req.user._id).select(safeUserSelect);
   sendResponse(res, {
@@ -135,6 +301,50 @@ export const getMyInstallationSession = catchAsync(async (req, res) => {
     success: true,
     message: "Installation session fetched",
     data: buildInstallationSessionData(user),
+  });
+});
+
+export const getMyUnlocks = catchAsync(async (req, res) => {
+  const user = await User.findById(req.user._id).select(safeUserSelect).lean();
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  const accesses = await ExamAccess.find({
+    userId: user._id,
+    status: "unlocked",
+  }).lean();
+
+  const examIds = [
+    ...new Set(accesses.map((access) => access.examId?.toString()).filter(Boolean)),
+  ];
+  const exams = examIds.length
+    ? await Exam.find({ _id: { $in: examIds } }).select("name").lean()
+    : [];
+  const examMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const unlockedExams = accesses.map((access) =>
+    buildExamUnlockSummary({
+      access,
+      examMap,
+      user,
+    })
+  );
+
+  const resourceAccess = await buildUnlockedResources(user);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "User unlocks fetched",
+    data: {
+      unlockedExams,
+      unlockedExamCount: unlockedExams.length,
+      ...resourceAccess,
+    },
   });
 });
 
@@ -183,17 +393,21 @@ export const getUsers = catchAsync(async (req, res) => {
     acc[exam._id.toString()] = exam.name;
     return acc;
   }, {});
+  const userById = users.reduce((acc, user) => {
+    acc[user._id.toString()] = user;
+    return acc;
+  }, {});
 
   const unlockedMap = accesses.reduce((acc, access) => {
     const key = access.userId.toString();
     if (!acc[key]) acc[key] = [];
-    acc[key].push({
-      examId: access.examId,
-      examName: examMap[access.examId?.toString()] || null,
-      purchaseType: access.purchaseType || null,
-      paymentStatus: access.paymentStatus || null,
-      purchasedAt: access.purchasedAt || null,
-    });
+    acc[key].push(
+      buildExamUnlockSummary({
+        access,
+        examMap,
+        user: userById[key] || null,
+      })
+    );
     return acc;
   }, {});
 
@@ -313,15 +527,15 @@ export const getUserDetails = catchAsync(async (req, res) => {
     return acc;
   }, {});
 
-  const unlockedExams = accesses.map((access) => ({
-    examId: access.examId,
-    examName: examMap[access.examId?.toString()] || null,
-    purchaseType: access.purchaseType || null,
-    paymentStatus: access.paymentStatus || null,
-    purchasedAt: access.purchasedAt || null,
-  }));
+  const unlockedExams = accesses.map((access) =>
+    buildExamUnlockSummary({
+      access,
+      examMap,
+      user,
+    })
+  );
 
-  const [overallAgg, perExamAgg] = await Promise.all([
+  const [overallAgg, perExamAgg, resourceAccess] = await Promise.all([
     ExamAttempt.aggregate([
       { $match: { userId: user._id, score: { $ne: null } } },
       {
@@ -342,6 +556,7 @@ export const getUserDetails = catchAsync(async (req, res) => {
         },
       },
     ]),
+    buildUnlockedResources(user),
   ]);
 
   const avgScore = overallAgg.length
@@ -381,6 +596,7 @@ export const getUserDetails = catchAsync(async (req, res) => {
       ...user,
       unlockedExams,
       unlockedExamCount: unlockedExams.length,
+      ...resourceAccess,
       avgScore,
       avgScoreByExam,
     },
