@@ -4,6 +4,7 @@ import { ExamAccess } from "../model/examAccess.model.js";
 import { Exam } from "../model/exam.model.js";
 import { ExamAttempt } from "../model/examAttempt.model.js";
 import { ExamRating } from "../model/examRating.model.js";
+import { AppSetting } from "../model/appSetting.model.js";
 import { ResourceProduct } from "../model/resourceProduct.model.js";
 import { ResourcePurchase } from "../model/resourcePurchase.model.js";
 import { generateOTP, uploadOnCloudinary } from "../utils/commonMethod.js";
@@ -112,6 +113,55 @@ const addMonths = (date, months) => {
   const result = new Date(date);
   result.setMonth(result.getMonth() + months);
   return result;
+};
+
+const normalizePlanIntervalUnit = (unit) => {
+  const value = unit?.toString().trim().toLowerCase();
+  if (!value) return "months";
+  if (["month", "months"].includes(value)) return "months";
+  if (["year", "years"].includes(value)) return "years";
+  if (["week", "weeks"].includes(value)) return "weeks";
+  if (["day", "days"].includes(value)) return "days";
+  return "months";
+};
+
+const addInterval = (date, count, unit) => {
+  const normalizedUnit = normalizePlanIntervalUnit(unit);
+  const result = new Date(date);
+
+  if (normalizedUnit === "years") {
+    result.setFullYear(result.getFullYear() + count);
+    return result;
+  }
+
+  if (normalizedUnit === "weeks") {
+    result.setDate(result.getDate() + count * 7);
+    return result;
+  }
+
+  if (normalizedUnit === "days") {
+    result.setDate(result.getDate() + count);
+    return result;
+  }
+
+  result.setMonth(result.getMonth() + count);
+  return result;
+};
+
+const getProfessionalPlanIntervalSettings = async () => {
+  const settings = await AppSetting.findOne()
+    .select("professionalPlanIntervalCount professionalPlanIntervalUnit")
+    .lean();
+
+  const count = Number(settings?.professionalPlanIntervalCount);
+
+  return {
+    count:
+      Number.isFinite(count) && count > 0
+        ? Math.ceil(count)
+        : PROFESSIONAL_SUBSCRIPTION_MONTHS,
+    unit: normalizePlanIntervalUnit(settings?.professionalPlanIntervalUnit),
+  };
 };
 
 const buildInstallationSessionData = (user) => ({
@@ -718,11 +768,9 @@ export const updateUserSubscription = catchAsync(async (req, res) => {
 
   user.subscriptionTier = tier;
   if (tier === "professional") {
+    const { count, unit } = await getProfessionalPlanIntervalSettings();
     const subscriptionStartedAt = new Date();
-    const subscriptionExpiresAt = addMonths(
-      subscriptionStartedAt,
-      PROFESSIONAL_SUBSCRIPTION_MONTHS
-    );
+    const subscriptionExpiresAt = addInterval(subscriptionStartedAt, count, unit);
     user.subscriptionStartedAt = subscriptionStartedAt;
     user.subscriptionExpiresAt = subscriptionExpiresAt;
   } else {
