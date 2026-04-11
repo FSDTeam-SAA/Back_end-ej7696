@@ -1211,8 +1211,23 @@ export async function selectQuestionsFromBank({
     match.questionHash = { $nin: excludeHashes };
   }
 
-  const pipeline = [{ $match: match }, { $sample: { size: safeCount } }];
-  return ExamQuestionBank.aggregate(pipeline);
+  const sampleSize = Math.max(safeCount * 3, safeCount);
+  const pipeline = [{ $match: match }, { $sample: { size: sampleSize } }];
+  const sampled = await ExamQuestionBank.aggregate(pipeline);
+  const selected = [];
+  const seenQuestionText = new Set();
+
+  sampled.forEach((doc) => {
+    if (selected.length >= safeCount) return;
+    const normalizedText =
+      doc?.questionTextNormalized ||
+      normalizeComparable(doc?.question?.question);
+    if (!normalizedText || seenQuestionText.has(normalizedText)) return;
+    seenQuestionText.add(normalizedText);
+    selected.push(doc);
+  });
+
+  return selected;
 }
 
 export async function ensureQuestionBankCapacity({
