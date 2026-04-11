@@ -210,6 +210,23 @@ const extractQuestionId = (q, index) =>
   q?.questionId?.toString() ||
   `q_${index}`;
 
+const normalizeQuestionText = (value) =>
+  (value ?? "").toString().replace(/\s+/g, " ").trim().toLowerCase();
+
+const hasDuplicateQuestionText = (questions) => {
+  if (!Array.isArray(questions)) return false;
+  const seen = new Set();
+  for (const question of questions) {
+    const normalized = normalizeQuestionText(
+      question?.question || question?.text || question?.prompt
+    );
+    if (!normalized) continue;
+    if (seen.has(normalized)) return true;
+    seen.add(normalized);
+  }
+  return false;
+};
+
 const getMonthKey = (date = new Date()) => {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
@@ -224,6 +241,40 @@ const applyQuestionIndex = (questions) => {
     }
     return q;
   });
+};
+
+const shuffleArray = (items) => {
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [
+      shuffled[swapIndex],
+      shuffled[index],
+    ];
+  }
+  return shuffled;
+};
+
+const shuffleQuestionOptions = (question) => {
+  if (
+    !question ||
+    typeof question !== "object" ||
+    Array.isArray(question) ||
+    !Array.isArray(question.options) ||
+    question.options.length < 2
+  ) {
+    return question;
+  }
+
+  return {
+    ...question,
+    options: shuffleArray(question.options),
+  };
+};
+
+const prepareQuestionsForDelivery = (questions) => {
+  if (!Array.isArray(questions)) return questions;
+  return applyQuestionIndex(questions).map(shuffleQuestionOptions);
 };
 
 const listExams = async (filter = {}, pageQuery, limitQuery) => {
@@ -599,7 +650,7 @@ export const startExam = catchAsync(async (req, res) => {
             fromCache: true,
             status: existingCache.status,
             statusCode: existingCache.statusCode,
-            questions: applyQuestionIndex(existingCache.questions),
+            questions: prepareQuestionsForDelivery(existingCache.questions),
             startTime: existingCache.startTime,
             endTime: existingCache.endTime,
             durationMinutes: existingCache.durationMinutes,
@@ -634,7 +685,8 @@ export const startExam = catchAsync(async (req, res) => {
     existingCache &&
     !recreate &&
     cacheMatchesCurrentBank &&
-    existingCache.n_question === effectiveQuestionCount
+    existingCache.n_question === effectiveQuestionCount &&
+    !hasDuplicateQuestionText(existingCache.questions)
   ) {
     return sendResponse(res, {
       statusCode: httpStatus.OK,
@@ -644,7 +696,7 @@ export const startExam = catchAsync(async (req, res) => {
         fromCache: true,
         status: existingCache.status,
         statusCode: existingCache.statusCode,
-        questions: applyQuestionIndex(existingCache.questions),
+        questions: prepareQuestionsForDelivery(existingCache.questions),
         startTime: existingCache.startTime,
         endTime: existingCache.endTime,
         durationMinutes: existingCache.durationMinutes,
@@ -799,7 +851,7 @@ export const startExam = catchAsync(async (req, res) => {
     data: {
       status: "success",
       statusCode: httpStatus.OK,
-      questions: applyQuestionIndex(bankCacheDoc.questions),
+      questions: prepareQuestionsForDelivery(bankCacheDoc.questions),
       startTime: bankCacheDoc.startTime,
       endTime: bankCacheDoc.endTime,
       durationMinutes: bankCacheDoc.durationMinutes,
