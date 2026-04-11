@@ -50,7 +50,6 @@ const DEFAULT_PRO_PLAN_FEATURES = [
   "All smart study tools",
 ];
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
-const PROFESSIONAL_SUBSCRIPTION_MONTHS = 3;
 
 const ZERO_DECIMAL_CURRENCIES = new Set([
   "BIF",
@@ -911,6 +910,60 @@ const addMonths = (date, months) => {
   return result;
 };
 
+const normalizePlanIntervalUnit = (unit) => {
+  const value = unit?.toString().trim().toLowerCase();
+  if (!value) return DEFAULT_PRO_PLAN_INTERVAL_UNIT;
+  if (["month", "months"].includes(value)) return "months";
+  if (["year", "years"].includes(value)) return "years";
+  if (["week", "weeks"].includes(value)) return "weeks";
+  if (["day", "days"].includes(value)) return "days";
+  return DEFAULT_PRO_PLAN_INTERVAL_UNIT;
+};
+
+const addInterval = (date, count, unit) => {
+  const normalizedUnit = normalizePlanIntervalUnit(unit);
+  const result = new Date(date);
+
+  if (normalizedUnit === "years") {
+    result.setFullYear(result.getFullYear() + count);
+    return result;
+  }
+
+  if (normalizedUnit === "weeks") {
+    result.setDate(result.getDate() + count * 7);
+    return result;
+  }
+
+  if (normalizedUnit === "days") {
+    result.setDate(result.getDate() + count);
+    return result;
+  }
+
+  return addMonths(result, count);
+};
+
+const formatIntervalLabel = (count, unit) => {
+  const normalizedUnit = normalizePlanIntervalUnit(unit);
+  const unitLabel =
+    count === 1 ? normalizedUnit.replace(/s$/, "") : normalizedUnit;
+  return `${count} ${unitLabel}`;
+};
+
+const getProfessionalPlanIntervalSettings = async () => {
+  const settings = await AppSetting.findOne()
+    .select("professionalPlanIntervalCount professionalPlanIntervalUnit")
+    .lean();
+  const count = Number(settings?.professionalPlanIntervalCount);
+
+  return {
+    count:
+      Number.isFinite(count) && count > 0
+        ? Math.ceil(count)
+        : DEFAULT_PRO_PLAN_INTERVAL_COUNT,
+    unit: normalizePlanIntervalUnit(settings?.professionalPlanIntervalUnit),
+  };
+};
+
 const hasActiveProfessionalSubscription = (user, referenceDate = new Date()) => {
   if (!user) return false;
   if (user.subscriptionTier?.toString().toLowerCase() !== "professional") {
@@ -921,13 +974,17 @@ const hasActiveProfessionalSubscription = (user, referenceDate = new Date()) => 
   return expiresAt.getTime() > referenceDate.getTime();
 };
 
-const buildProfessionalSubscriptionWindow = (startDate = new Date()) => {
+const buildProfessionalSubscriptionWindow = async (startDate = new Date()) => {
+  const { count, unit } = await getProfessionalPlanIntervalSettings();
   const subscriptionStartedAt = new Date(startDate);
-  const subscriptionExpiresAt = addMonths(
+  const subscriptionExpiresAt = addInterval(subscriptionStartedAt, count, unit);
+  return {
     subscriptionStartedAt,
-    PROFESSIONAL_SUBSCRIPTION_MONTHS
-  );
-  return { subscriptionStartedAt, subscriptionExpiresAt };
+    subscriptionExpiresAt,
+    intervalCount: count,
+    intervalUnit: unit,
+    intervalLabel: formatIntervalLabel(count, unit),
+  };
 };
 
 const toStripeAmount = (amount, currency) => {
@@ -1369,8 +1426,8 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
       }
     );
 
-    const { subscriptionStartedAt, subscriptionExpiresAt } =
-      buildProfessionalSubscriptionWindow();
+    const { subscriptionStartedAt, subscriptionExpiresAt, intervalLabel } =
+      await buildProfessionalSubscriptionWindow();
 
     await User.findByIdAndUpdate(userId, {
       subscriptionTier: "professional",
@@ -1414,7 +1471,7 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
         title: "Professional Plan",
         amountPaid: planPurchase.totalAmount,
         currency: planPurchase.currency || DEFAULT_CURRENCY,
-        billingCycleLabel: `${PROFESSIONAL_SUBSCRIPTION_MONTHS} months`,
+        billingCycleLabel: intervalLabel,
         nextBillingDate: subscriptionExpiresAt,
         paymentMethodLabel: buildStripePaymentMethodLabel(paymentIntent),
         receiptNumber: buildStripeReceiptNumber(paymentIntent),
@@ -1904,8 +1961,8 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
     }
   );
 
-  const { subscriptionStartedAt, subscriptionExpiresAt } =
-    buildProfessionalSubscriptionWindow();
+  const { subscriptionStartedAt, subscriptionExpiresAt, intervalLabel } =
+    await buildProfessionalSubscriptionWindow();
 
   await User.findByIdAndUpdate(userId, {
     subscriptionTier: "professional",
@@ -1949,7 +2006,7 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
       title: "Professional Plan",
       amountPaid: planPurchase.totalAmount,
       currency: planPurchase.currency || DEFAULT_CURRENCY,
-      billingCycleLabel: `${PROFESSIONAL_SUBSCRIPTION_MONTHS} months`,
+      billingCycleLabel: intervalLabel,
       nextBillingDate: subscriptionExpiresAt,
       paymentMethodLabel: buildPayPalPaymentMethodLabel(),
       receiptNumber: buildPayPalReceiptNumber(captureData, orderId),
@@ -2406,7 +2463,7 @@ export const getProfessionalPlan = catchAsync(async (req, res) => {
         interval: {
           count: intervalCount,
           unit: intervalUnit,
-          label: `${intervalCount} ${intervalUnit}`,
+          label: formatIntervalLabel(intervalCount, intervalUnit),
         },
         description,
         features,
