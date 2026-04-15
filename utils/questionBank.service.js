@@ -148,6 +148,15 @@ function normalizeAnswerToken(value) {
   return normalizeComparable(value).replace(/[^a-z0-9]/g, "");
 }
 
+function shuffleArray(items = []) {
+  const result = [...items];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+  }
+  return result;
+}
+
 function coerceOption(option, index) {
   if (typeof option === "string" || typeof option === "number") {
     return {
@@ -354,13 +363,15 @@ function normalizeQuestionCandidate(rawQuestion, index) {
     issues.push("missing_correct_option");
   }
 
+  const shuffledOptions = shuffleArray(options).map((option, optionIndex) => ({
+    key: normalizeOptionKey(null, optionIndex),
+    option: option.option,
+    is_correct: option.is_correct,
+  }));
+
   const canonicalQuestion = {
     question,
-    options: options.map((option, optionIndex) => ({
-      key: normalizeOptionKey(option.key, optionIndex),
-      option: option.option,
-      is_correct: option.is_correct,
-    })),
+    options: shuffledOptions,
     explanation: normalizeWhitespace(rawQuestion.explanation ?? rawQuestion.rationale),
     category: normalizeWhitespace(
       rawQuestion.category ?? rawQuestion.topic ?? rawQuestion.section
@@ -823,6 +834,7 @@ export async function stageAndProcessQuestionBatch({
   trigger = "manual",
   initiatedBy = null,
   examType = QUESTION_SERVICE_DEFAULT_EXAM_TYPE || "closed_book",
+  autoApprove = true,
 }) {
   const safeBatchSize = clampNumber(
     Number(batchSize) || QUESTION_BANK_DEFAULT_BATCH_SIZE,
@@ -954,54 +966,58 @@ export async function stageAndProcessQuestionBatch({
     }
 
     const now = new Date();
-    const bulkOperations = workingCandidates.map((candidate) => ({
-      updateOne: {
-        filter: {
-          examId: exam._id,
-          contentHash,
-          questionHash: candidate.questionHash,
-        },
-        update: {
-          $setOnInsert: {
-            examId: exam._id,
-            contentHash,
-            questionHash: candidate.questionHash,
-            questionTextNormalized: candidate.questionTextNormalized,
-            question: candidate.question,
-            sourceBatchId: batchDoc._id,
-            status: "approved",
-            approvedAt: now,
-            validation: {
-              rulesPassed: true,
-              aiPassed: candidate.aiPassed,
-              aiSkipped: candidate.aiSkipped,
-              issues: candidate.aiIssues,
-              validatedAt: now,
-            },
-          },
-        },
-        upsert: true,
+    const stagedQuestions = workingCandidates.map((candidate) => ({
+      questionHash: candidate.questionHash,
+      questionTextNormalized: candidate.questionTextNormalized,
+      question: candidate.question,
+      validation: {
+        rulesPassed: true,
+        aiPassed: candidate.aiPassed,
+        aiSkipped: candidate.aiSkipped,
+        issues: candidate.aiIssues,
+        validatedAt: now,
       },
     }));
 
     let insertedCount = 0;
-    if (bulkOperations.length > 0) {
+    let concurrentDuplicateCount = 0;
+    if (autoApprove && stagedQuestions.length > 0) {
+      const bulkOperations = stagedQuestions.map((candidate) => ({
+        updateOne: {
+          filter: {
+            examId: exam._id,
+            contentHash,
+            questionHash: candidate.questionHash,
+          },
+          update: {
+            $setOnInsert: {
+              examId: exam._id,
+              contentHash,
+              questionHash: candidate.questionHash,
+              questionTextNormalized: candidate.questionTextNormalized,
+              question: candidate.question,
+              sourceBatchId: batchDoc._id,
+              status: "approved",
+              approvedAt: now,
+              validation: candidate.validation,
+            },
+          },
+          upsert: true,
+        },
+      }));
+
       const bulkResult = await ExamQuestionBank.bulkWrite(bulkOperations, {
         ordered: false,
       });
       insertedCount = Number(bulkResult?.upsertedCount || 0);
+      concurrentDuplicateCount = Math.max(stagedQuestions.length - insertedCount, 0);
+      duplicateInBankCount += concurrentDuplicateCount;
     }
-
-    const concurrentDuplicateCount = Math.max(
-      workingCandidates.length - insertedCount,
-      0
-    );
-    duplicateInBankCount += concurrentDuplicateCount;
 
     const summary = {
       requestedCount: safeBatchSize,
       generatedCount: rawQuestions.length,
-      approvedCount: insertedCount,
+      approvedCount: autoApprove ? insertedCount : stagedQuestions.length,
       rejectedCount: rejectedQuestions.length + concurrentDuplicateCount,
       duplicateInBatchCount: validation.duplicateInBatchCount,
       duplicateInBankCount,
@@ -1010,16 +1026,18 @@ export async function stageAndProcessQuestionBatch({
     };
 
     batchDoc.summary = summary;
-    batchDoc.approvedQuestionHashes = workingCandidates
+    batchDoc.stagedQuestions = autoApprove ? [] : stagedQuestions;
+    batchDoc.approvedQuestionHashes = (autoApprove ? stagedQuestions : [])
       .slice(0, insertedCount)
       .map((candidate) => candidate.questionHash);
     batchDoc.rejectedQuestions = rejectedQuestions.slice(0, 200);
-    batchDoc.status =
-      insertedCount > 0 && summary.rejectedCount === 0
+    batchDoc.status = autoApprove
+      ? insertedCount > 0 && summary.rejectedCount === 0
         ? "approved"
         : insertedCount > 0
         ? "partial"
-        : "validated";
+        : "validated"
+      : "validated";
     batchDoc.completedAt = new Date();
     await batchDoc.save();
 
@@ -1027,6 +1045,9 @@ export async function stageAndProcessQuestionBatch({
       batchId: batchDoc._id,
       batchNumber: batchDoc.batchNumber,
       status: batchDoc.status,
+      requiresReview: !autoApprove,
+      stagedForReviewCount: stagedQuestions.length,
+      savedToBankCount: insertedCount,
       ...summary,
     };
   } catch (error) {
@@ -1065,6 +1086,7 @@ export async function generateQuestionBankInBatches({
   initiatedBy = null,
   trigger = "manual",
   examType = QUESTION_SERVICE_DEFAULT_EXAM_TYPE || "closed_book",
+  autoApprove = trigger !== "manual",
 }) {
   const resolvedContentHash = contentHash || buildExamContentHash(exam);
   const safeBatchSize = clampNumber(
@@ -1134,17 +1156,22 @@ export async function generateQuestionBankInBatches({
         initiatedBy,
         trigger,
         examType,
+        autoApprove,
       });
       executedBatches += 1;
-      insertedThisRun += batchSummary.approvedCount;
+      insertedThisRun += autoApprove
+        ? batchSummary.savedToBankCount || batchSummary.approvedCount || 0
+        : 0;
       batches.push(batchSummary);
       nextBatchNumber += 1;
 
-      const approvedCurrent = await countApprovedQuestionBankItems({
-        examId: exam._id,
-        contentHash: resolvedContentHash,
-      });
-      if (approvedCurrent >= safeTargetCount) break;
+      if (autoApprove) {
+        const approvedCurrent = await countApprovedQuestionBankItems({
+          examId: exam._id,
+          contentHash: resolvedContentHash,
+        });
+        if (approvedCurrent >= safeTargetCount) break;
+      }
     } catch (error) {
       failure = error;
       break;
@@ -1165,6 +1192,7 @@ export async function generateQuestionBankInBatches({
     approvedBefore,
     approvedAfter,
     insertedThisRun,
+    requiresReview: !autoApprove,
     completedTarget: approvedAfter >= safeTargetCount,
     failed: Boolean(failure),
     failureMessage: failure?.message || null,
@@ -1297,7 +1325,13 @@ export async function ensureQuestionBankCapacity({
 }
 
 export async function getQuestionBankStatus({ examId, contentHash }) {
-  const [approvedCount, totalCount, lastBatch, batchStatusAgg] = await Promise.all([
+  const [
+    approvedCount,
+    totalCount,
+    lastBatch,
+    batchStatusAgg,
+    pendingReviewBatches,
+  ] = await Promise.all([
     ExamQuestionBank.countDocuments({
       examId,
       contentHash,
@@ -1311,12 +1345,26 @@ export async function getQuestionBankStatus({ examId, contentHash }) {
       { $match: { examId: toObjectId(examId), contentHash } },
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]),
+    ExamQuestionBatch.find({
+      examId,
+      contentHash,
+      status: "validated",
+      "stagedQuestions.0": { $exists: true },
+    })
+      .select("stagedQuestions")
+      .lean(),
   ]);
 
   const batchStatus = {};
   batchStatusAgg.forEach((item) => {
     batchStatus[item._id] = item.count;
   });
+
+  const pendingReviewQuestionCount = pendingReviewBatches.reduce(
+    (total, batch) =>
+      total + (Array.isArray(batch?.stagedQuestions) ? batch.stagedQuestions.length : 0),
+    0
+  );
 
   return {
     contentHash,
@@ -1326,6 +1374,169 @@ export async function getQuestionBankStatus({ examId, contentHash }) {
     lastBatchStatus: lastBatch?.status || null,
     lastBatchSummary: lastBatch?.summary || null,
     batchStatus,
+    pendingReviewBatchCount: pendingReviewBatches.length,
+    pendingReviewQuestionCount,
+  };
+}
+
+export async function listQuestionBankReviewQuestions({
+  examId,
+  contentHash,
+  page = 1,
+  limit = 20,
+  search = "",
+}) {
+  const safePage = Math.max(Number(page) || 1, 1);
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 200);
+  const normalizedSearch = normalizeWhitespace(search);
+
+  const batches = await ExamQuestionBatch.find({
+    examId: toObjectId(examId),
+    contentHash,
+    status: "validated",
+    "stagedQuestions.0": { $exists: true },
+  })
+    .sort({ batchNumber: -1, _id: -1 })
+    .select("batchNumber stagedQuestions completedAt updatedAt")
+    .lean();
+
+  let questions = batches.flatMap((batch) =>
+    (batch?.stagedQuestions || []).map((item, index) => ({
+      questionId: `${batch?._id || "batch"}-${index}`,
+      questionHash: item?.questionHash || "",
+      question: item?.question?.question || "",
+      options: Array.isArray(item?.question?.options) ? item.question.options : [],
+      explanation: item?.question?.explanation || "",
+      category: item?.question?.category || "",
+      tags: Array.isArray(item?.question?.tags) ? item.question.tags : [],
+      metadata: item?.question?.metadata || {},
+      validation: item?.validation || null,
+      batchNumber: batch?.batchNumber || 0,
+      batchCompletedAt: batch?.completedAt || batch?.updatedAt || null,
+    }))
+  );
+
+  if (normalizedSearch) {
+    const regex = new RegExp(escapeRegex(normalizedSearch), "i");
+    questions = questions.filter(
+      (item) =>
+        regex.test(item.question || "") ||
+        regex.test(item.category || "") ||
+        (item.tags || []).some((tag) => regex.test(tag || ""))
+    );
+  }
+
+  const total = questions.length;
+  const totalPages = Math.max(Math.ceil(total / safeLimit), 1);
+  const start = (safePage - 1) * safeLimit;
+
+  return {
+    questions: questions.slice(start, start + safeLimit),
+    meta: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages,
+      hasPrevPage: safePage > 1,
+      hasNextPage: safePage < totalPages,
+    },
+  };
+}
+
+export async function approveQuestionBankReviewBatches({
+  examId,
+  contentHash,
+  batchIds = [],
+}) {
+  const filter = {
+    examId: toObjectId(examId),
+    contentHash,
+    status: "validated",
+    "stagedQuestions.0": { $exists: true },
+  };
+
+  if (Array.isArray(batchIds) && batchIds.length > 0) {
+    filter._id = { $in: batchIds.map((value) => toObjectId(value)) };
+  }
+
+  const batches = await ExamQuestionBatch.find(filter);
+  if (!batches.length) {
+    return {
+      selectedBatchCount: 0,
+      approvedBatchCount: 0,
+      savedQuestionCount: 0,
+      duplicateOnApproveCount: 0,
+    };
+  }
+
+  const examObjectId = toObjectId(examId);
+  let approvedBatchCount = 0;
+  let savedQuestionCount = 0;
+  let duplicateOnApproveCount = 0;
+
+  for (const batch of batches) {
+    const stagedQuestions = Array.isArray(batch.stagedQuestions)
+      ? batch.stagedQuestions
+      : [];
+    if (!stagedQuestions.length) continue;
+
+    const now = new Date();
+    const bulkOperations = stagedQuestions.map((candidate) => ({
+      updateOne: {
+        filter: {
+          examId: examObjectId,
+          contentHash,
+          questionHash: candidate.questionHash,
+        },
+        update: {
+          $setOnInsert: {
+            examId: examObjectId,
+            contentHash,
+            questionHash: candidate.questionHash,
+            questionTextNormalized: candidate.questionTextNormalized,
+            question: candidate.question,
+            sourceBatchId: batch._id,
+            status: "approved",
+            approvedAt: now,
+            validation: candidate.validation,
+          },
+        },
+        upsert: true,
+      },
+    }));
+
+    const bulkResult = await ExamQuestionBank.bulkWrite(bulkOperations, {
+      ordered: false,
+    });
+    const insertedCount = Number(bulkResult?.upsertedCount || 0);
+    const duplicateCount = Math.max(stagedQuestions.length - insertedCount, 0);
+    const summaryObject = batch.summary?.toObject?.() || batch.summary || {};
+
+    batch.approvedQuestionHashes = stagedQuestions
+      .slice(0, insertedCount)
+      .map((candidate) => candidate.questionHash);
+    batch.summary = {
+      ...summaryObject,
+      approvedCount: insertedCount,
+      duplicateInBankCount:
+        Number(summaryObject.duplicateInBankCount || 0) + duplicateCount,
+      rejectedCount: Number(summaryObject.rejectedCount || 0) + duplicateCount,
+    };
+    batch.stagedQuestions = [];
+    batch.status = insertedCount > 0 ? "approved" : "partial";
+    batch.completedAt = now;
+    await batch.save();
+
+    approvedBatchCount += 1;
+    savedQuestionCount += insertedCount;
+    duplicateOnApproveCount += duplicateCount;
+  }
+
+  return {
+    selectedBatchCount: batches.length,
+    approvedBatchCount,
+    savedQuestionCount,
+    duplicateOnApproveCount,
   };
 }
 

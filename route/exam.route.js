@@ -6,8 +6,10 @@ import {
   getActiveExams,
   getAllExamsAdmin,
   getAllExamReviewsAdmin,
+  approveExamQuestionBankReviewAdmin,
   getPublishedExamReviews,
   getExamQuestionBankQuestionsAdmin,
+  getExamQuestionBankReviewQuestionsAdmin,
   getExamQuestionBankAdminStatus,
   saveExamProgress,
   submitExamAnswers,
@@ -58,11 +60,23 @@ router.get(
   requirePermission("manage_exams_questions"),
   getExamQuestionBankQuestionsAdmin
 );
+router.get(
+  "/:id/question-bank/review-questions",
+  protect,
+  requirePermission("manage_exams_questions"),
+  getExamQuestionBankReviewQuestionsAdmin
+);
 router.post(
   "/:id/question-bank/generate",
   protect,
   requirePermission("manage_exams_questions"),
   generateExamQuestionBank
+);
+router.post(
+  "/:id/question-bank/review-approve",
+  protect,
+  requirePermission("manage_exams_questions"),
+  approveExamQuestionBankReviewAdmin
 );
 router.post("/:id/start", protect, startExam);
 router.get("/:id/start", protect, startExam);

@@ -13,12 +13,14 @@ import { AppSetting } from "../model/appSetting.model.js";
 import { ExamRating } from "../model/examRating.model.js";
 import { User } from "../model/user.model.js";
 import {
+  approveQuestionBankReviewBatches,
   QUESTION_BANK_DEFAULT_BATCH_SIZE,
   QUESTION_BANK_DEFAULT_TARGET,
   buildExamContentHash,
   ensureQuestionBankCapacity,
   generateQuestionBankInBatches,
   getQuestionBankStatus,
+  listQuestionBankReviewQuestions,
   listQuestionBankQuestions,
   selectQuestionsFromBank,
 } from "../utils/questionBank.service.js";
@@ -907,6 +909,7 @@ export const generateExamQuestionBank = catchAsync(async (req, res) => {
     initiatedBy: req.user?._id || null,
     trigger: "manual",
     examType,
+    autoApprove: false,
   });
 
   sendResponse(res, {
@@ -919,6 +922,7 @@ export const generateExamQuestionBank = catchAsync(async (req, res) => {
       examId: exam._id,
       examName: exam.name,
       contentHash,
+      reviewRequired: true,
       ...summary,
     },
   });
@@ -990,6 +994,76 @@ export const getExamQuestionBankQuestionsAdmin = catchAsync(async (req, res) => 
       examName: exam.name,
       contentHash,
       ...data,
+    },
+  });
+});
+
+export const getExamQuestionBankReviewQuestionsAdmin = catchAsync(async (req, res) => {
+  const exam = await Exam.findById(req.params.id).lean();
+  if (!exam) {
+    throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+  }
+
+  const contentHash = buildExamContentHash(exam);
+  const page = parsePositiveInteger(req.query?.page, 1, "page");
+  const limit = Math.min(
+    parsePositiveInteger(req.query?.limit, 20, "limit"),
+    200
+  );
+  const search =
+    req.query?.search !== undefined && req.query?.search !== null
+      ? req.query.search.toString()
+      : "";
+
+  const data = await listQuestionBankReviewQuestions({
+    examId: exam._id,
+    contentHash,
+    page,
+    limit,
+    search,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Exam question bank review questions fetched",
+    data: {
+      examId: exam._id,
+      examName: exam.name,
+      contentHash,
+      ...data,
+    },
+  });
+});
+
+export const approveExamQuestionBankReviewAdmin = catchAsync(async (req, res) => {
+  const exam = await Exam.findById(req.params.id).lean();
+  if (!exam) {
+    throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+  }
+
+  const contentHash = buildExamContentHash(exam);
+  const batchIds = Array.isArray(req.body?.batchIds)
+    ? req.body.batchIds
+        .map((value) => value?.toString?.().trim?.())
+        .filter(Boolean)
+    : [];
+
+  const result = await approveQuestionBankReviewBatches({
+    examId: exam._id,
+    contentHash,
+    batchIds,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Question bank review approved",
+    data: {
+      examId: exam._id,
+      examName: exam.name,
+      contentHash,
+      ...result,
     },
   });
 });

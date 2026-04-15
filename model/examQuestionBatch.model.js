@@ -25,6 +25,41 @@ const rejectedQuestionSchema = new Schema(
   { _id: false }
 );
 
+const stagedQuestionSchema = new Schema(
+  {
+    questionHash: { type: String, default: "" },
+    questionTextNormalized: { type: String, default: "" },
+    question: {
+      question: { type: String, default: "" },
+      options: {
+        type: [
+          new Schema(
+            {
+              key: { type: String, default: "" },
+              option: { type: String, default: "" },
+              is_correct: { type: Boolean, default: false },
+            },
+            { _id: false }
+          ),
+        ],
+        default: [],
+      },
+      explanation: { type: String, default: "" },
+      category: { type: String, default: "" },
+      tags: { type: [String], default: [] },
+      metadata: { type: Schema.Types.Mixed, default: {} },
+    },
+    validation: {
+      rulesPassed: { type: Boolean, default: false },
+      aiPassed: { type: Boolean, default: true },
+      aiSkipped: { type: Boolean, default: true },
+      issues: { type: [String], default: [] },
+      validatedAt: { type: Date, default: null },
+    },
+  },
+  { _id: false }
+);
+
 const examQuestionBatchSchema = new Schema(
   {
     examId: {
@@ -62,6 +97,7 @@ const examQuestionBatchSchema = new Schema(
       rawQuestions: { type: [Schema.Types.Mixed], default: [] },
     },
     summary: { type: batchSummarySchema, default: () => ({}) },
+    stagedQuestions: { type: [stagedQuestionSchema], default: [] },
     approvedQuestionHashes: { type: [String], default: [] },
     rejectedQuestions: { type: [rejectedQuestionSchema], default: [] },
     errorMessage: { type: String, default: "" },
