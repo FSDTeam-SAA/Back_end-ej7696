@@ -121,6 +121,29 @@ const resourcePurchaseSchema = new Schema(
       type: Date,
       default: null,
     },
+    refundedAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    refundStatus: {
+      type: String,
+      enum: ["none", "partial", "full"],
+      default: "none",
+    },
+    refundHistory: {
+      type: [
+        {
+          refundedAt: { type: Date, default: Date.now },
+          amount: { type: Number, required: true, min: 0 },
+          reason: { type: String, trim: true, default: "" },
+          adminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          type: { type: String, enum: ["full", "partial"], required: true },
+          stripeRefundId: { type: String, trim: true, default: "" },
+        },
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );

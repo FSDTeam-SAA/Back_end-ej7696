@@ -2104,6 +2104,172 @@ export const updateProfessionalPlanPurchaseStatus = catchAsync(async (req, res) 
   });
 });
 
+export const getUserTransactions = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+  if (!userId) throw new AppError(httpStatus.BAD_REQUEST, "userId is required");
+
+  const [planPurchases, resourcePurchases] = await Promise.all([
+    ProfessionalPlanPurchase.find({ userId })
+      .populate("examId", "name")
+      .sort({ createdAt: -1 })
+      .lean(),
+    ResourcePurchase.find({ userId })
+      .populate("productId", "title productCode")
+      .sort({ createdAt: -1 })
+      .lean(),
+  ]);
+
+  const transactions = [
+    ...planPurchases.map((p) => ({ ...p, transactionType: "plan" })),
+    ...resourcePurchases.map((p) => ({ ...p, transactionType: "resource" })),
+  ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "User transactions fetched",
+    data: transactions,
+  });
+});
+
+export const processRefund = catchAsync(async (req, res) => {
+  const { transactionId } = req.params;
+  const { type, amount, reason, transactionType } = req.body;
+  const adminId = req.user?._id;
+
+  if (!transactionId || !type || !reason || !transactionType) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "transactionId, type, reason, and transactionType are required"
+    );
+  }
+  if (!["full", "partial"].includes(type)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "type must be 'full' or 'partial'");
+  }
+  if (!["plan", "resource"].includes(transactionType)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "transactionType must be 'plan' or 'resource'");
+  }
+
+  const Model =
+    transactionType === "plan" ? ProfessionalPlanPurchase : ResourcePurchase;
+  const transaction = await Model.findById(transactionId);
+
+  if (!transaction) {
+    throw new AppError(httpStatus.NOT_FOUND, "Transaction not found");
+  }
+
+  const paidAmount = transaction.totalAmount ?? transaction.finalPrice ?? 0;
+  const alreadyRefunded = transaction.refundedAmount || 0;
+  const refundable = paidAmount - alreadyRefunded;
+
+  if (refundable <= 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "This transaction has no remaining refundable amount");
+  }
+
+  let refundAmount;
+  if (type === "full") {
+    refundAmount = refundable;
+  } else {
+    const parsed = Number(amount);
+    if (!parsed || parsed <= 0) {
+      throw new AppError(httpStatus.BAD_REQUEST, "A valid amount is required for partial refund");
+    }
+    if (parsed > refundable) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        `Refund amount ($${parsed}) exceeds remaining refundable amount ($${refundable.toFixed(2)})`
+      );
+    }
+    refundAmount = parsed;
+  }
+
+  // Issue Stripe refund first (before touching DB) so any Stripe error fails fast
+  let stripeRefundId = "";
+  if (transaction.provider === "stripe" && transaction.stripePaymentIntentId) {
+    const stripe = getStripeClient();
+    const currency = transaction.currency ?? "USD";
+    const stripeRefund = await stripe.refunds.create({
+      payment_intent: transaction.stripePaymentIntentId,
+      amount: toStripeAmount(refundAmount, currency),
+      reason: "requested_by_customer",
+    });
+    stripeRefundId = stripeRefund.id;
+  }
+
+  const newRefundedAmount = alreadyRefunded + refundAmount;
+  const isFullyRefunded = newRefundedAmount >= paidAmount;
+
+  transaction.refundedAmount = newRefundedAmount;
+  transaction.refundStatus = isFullyRefunded ? "full" : "partial";
+  transaction.refundHistory.push({
+    refundedAt: new Date(),
+    amount: refundAmount,
+    reason: reason.trim(),
+    adminId: adminId || null,
+    type,
+    stripeRefundId,
+  });
+
+  if (isFullyRefunded && transactionType === "plan") {
+    transaction.status = "refunded";
+    await markPlanPurchaseStatusAndRewards({
+      planPurchase: transaction,
+      status: "refunded",
+      reason: reason.trim(),
+    });
+    await ExamAccess.findOneAndUpdate(
+      { userId: transaction.userId, examId: transaction.examId },
+      { paymentStatus: "refunded" }
+    );
+    await ResourcePurchase.updateMany(
+      { userId: transaction.userId, "metadata.professionalPlanPurchaseId": transaction._id },
+      { $set: { status: "refunded" } }
+    );
+  } else {
+    await transaction.save();
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: `Refund of $${refundAmount.toFixed(2)} processed successfully${stripeRefundId ? ` (Stripe: ${stripeRefundId})` : ""}`,
+    data: transaction,
+  });
+});
+
+export const getTransactionRefunds = catchAsync(async (req, res) => {
+  const { transactionId } = req.params;
+  const { transactionType } = req.query;
+
+  if (!transactionId || !transactionType) {
+    throw new AppError(httpStatus.BAD_REQUEST, "transactionId and transactionType are required");
+  }
+
+  const Model =
+    transactionType === "plan" ? ProfessionalPlanPurchase : ResourcePurchase;
+  const transaction = await Model.findById(transactionId)
+    .populate("refundHistory.adminId", "firstName lastName email")
+    .lean();
+
+  if (!transaction) {
+    throw new AppError(httpStatus.NOT_FOUND, "Transaction not found");
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Refund history fetched",
+    data: {
+      transactionId,
+      transactionType,
+      totalAmount: transaction.totalAmount ?? transaction.finalPrice ?? 0,
+      refundedAmount: transaction.refundedAmount || 0,
+      refundStatus: transaction.refundStatus || "none",
+      refundHistory: transaction.refundHistory || [],
+    },
+  });
+});
+
 export const manualUnlockExam = catchAsync(async (req, res) => {
   const { userId } = req.body;
   const examId = req.params.examId;

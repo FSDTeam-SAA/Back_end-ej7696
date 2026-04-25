@@ -19,6 +19,9 @@ import {
   manualUnlockExamsBulk,
   updateProfessionalPlanPurchaseStatus,
   updatePricingSettings,
+  getUserTransactions,
+  processRefund,
+  getTransactionRefunds,
 } from "../controller/payment.controller.js";
 import {
   optionalProtect,
@@ -66,6 +69,24 @@ router.patch(
   protect,
   requirePermission("manage_subscription"),
   updateProfessionalPlanPurchaseStatus
+);
+router.get(
+  "/admin/users/:userId/transactions",
+  protect,
+  requirePermission("view_billing_summary"),
+  getUserTransactions
+);
+router.post(
+  "/admin/transactions/:transactionId/refund",
+  protect,
+  requirePermission("manage_subscription"),
+  processRefund
+);
+router.get(
+  "/admin/transactions/:transactionId/refunds",
+  protect,
+  requirePermission("view_billing_summary"),
+  getTransactionRefunds
 );
 
 export default router;
