@@ -2,9 +2,11 @@ import express from "express";
 import {
   changePassword,
   deleteUser,
+  bulkDeleteUsers,
   getProfile,
   getUserDetails,
   getUsers,
+  getRefundedUsers,
   updateSubAdminPermissions,
   updateUserStatus,
   updateUserSubscription,
@@ -23,6 +25,8 @@ import upload from "../middleware/multer.middleware.js";
 const router = express.Router();
 
 router.get("/", protect, requirePermission("view_user_list"), getUsers);
+router.get("/refunded", protect, requirePermission("view_user_list"), getRefundedUsers);
+router.delete("/bulk", protect, isAdmin, bulkDeleteUsers);
 router.get("/profile", protect, getProfile);
 router.get("/profile/installation-session", protect, getMyInstallationSession);
 router.get("/profile/unlocks", protect, getMyUnlocks);

@@ -7,6 +7,7 @@ import { ExamRating } from "../model/examRating.model.js";
 import { AppSetting } from "../model/appSetting.model.js";
 import { ResourceProduct } from "../model/resourceProduct.model.js";
 import { ResourcePurchase } from "../model/resourcePurchase.model.js";
+import { ProfessionalPlanPurchase } from "../model/professionalPlanPurchase.model.js";
 import { generateOTP, uploadOnCloudinary } from "../utils/commonMethod.js";
 import AppError from "../errors/AppError.js";
 import sendResponse from "../utils/sendResponse.js";
@@ -732,6 +733,165 @@ export const deleteUser = catchAsync(async (req, res) => {
     success: true,
     message: "User deleted successfully",
     data: null,
+  });
+});
+
+export const bulkDeleteUsers = catchAsync(async (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "User IDs are required");
+  }
+  const result = await User.deleteMany({ _id: { $in: ids } });
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: `${result.deletedCount} user(s) deleted successfully`,
+    data: { deletedCount: result.deletedCount },
+  });
+});
+
+export const getRefundedUsers = catchAsync(async (req, res) => {
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.max(parseInt(req.query.limit, 10) || 10, 1);
+  const skip = (page - 1) * limit;
+
+  const refundFilter = { refundStatus: { $in: ["partial", "full"] } };
+  const [planRefundedIds, resourceRefundedIds] = await Promise.all([
+    ProfessionalPlanPurchase.distinct("userId", refundFilter),
+    ResourcePurchase.distinct("userId", refundFilter),
+  ]);
+
+  const seen = new Set();
+  const refundedUserIds = [];
+  for (const id of [...planRefundedIds, ...resourceRefundedIds]) {
+    const key = id.toString();
+    if (!seen.has(key)) {
+      seen.add(key);
+      refundedUserIds.push(id);
+    }
+  }
+
+  if (refundedUserIds.length === 0) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Refunded users fetched",
+      data: { users: [], meta: { page, limit, total: 0, totalPages: 1 } },
+    });
+  }
+
+  const filter = { _id: { $in: refundedUserIds } };
+  const statusFilter = parseStatus(req.query.status);
+  if (statusFilter) filter.status = statusFilter;
+  const roleFilter = parseRole(req.query.role);
+  if (roleFilter) filter.role = roleFilter;
+  const tierFilter = parseTier(req.query.tier);
+  if (tierFilter) filter.subscriptionTier = tierFilter;
+
+  const [users, total] = await Promise.all([
+    User.find(filter)
+      .select(safeUserSelect)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    User.countDocuments(filter),
+  ]);
+
+  const totalPages = Math.ceil(total / limit) || 1;
+
+  const userIds = users.map((u) => u._id);
+  const accesses = userIds.length
+    ? await ExamAccess.find({ userId: { $in: userIds }, status: "unlocked" }).lean()
+    : [];
+
+  const examIds = [
+    ...new Set(accesses.map((a) => a.examId?.toString()).filter(Boolean)),
+  ];
+  const exams = examIds.length
+    ? await Exam.find({ _id: { $in: examIds } }).select("name").lean()
+    : [];
+  const examMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+  const userById = users.reduce((acc, u) => {
+    acc[u._id.toString()] = u;
+    return acc;
+  }, {});
+
+  const unlockedMap = accesses.reduce((acc, access) => {
+    const key = access.userId.toString();
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(buildExamUnlockSummary({ access, examMap, user: userById[key] || null }));
+    return acc;
+  }, {});
+
+  const scoreMatch = userIds.length ? { userId: { $in: userIds }, score: { $ne: null } } : null;
+  const [overallAgg, perExamAgg] = scoreMatch
+    ? await Promise.all([
+        ExamAttempt.aggregate([
+          { $match: scoreMatch },
+          { $group: { _id: "$userId", avgScore: { $avg: "$score" }, attempts: { $sum: 1 } } },
+        ]),
+        ExamAttempt.aggregate([
+          { $match: scoreMatch },
+          { $group: { _id: { userId: "$userId", examId: "$examId" }, avgScore: { $avg: "$score" }, attempts: { $sum: 1 } } },
+        ]),
+      ])
+    : [[], []];
+
+  const overallMap = overallAgg.reduce((acc, item) => {
+    acc[item._id.toString()] = {
+      avgScore: Number((item.avgScore ?? 0).toFixed(2)),
+      attempts: item.attempts || 0,
+    };
+    return acc;
+  }, {});
+
+  const perExamIds = [
+    ...new Set(perExamAgg.map((item) => item?._id?.examId?.toString()).filter(Boolean)),
+  ];
+  const perExamDocs = perExamIds.length
+    ? await Exam.find({ _id: { $in: perExamIds } }).select("name").lean()
+    : [];
+  const perExamNameMap = perExamDocs.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+
+  const perExamMap = perExamAgg.reduce((acc, item) => {
+    const userKey = item?._id?.userId?.toString();
+    const examKey = item?._id?.examId?.toString();
+    if (!userKey || !examKey) return acc;
+    if (!acc[userKey]) acc[userKey] = [];
+    acc[userKey].push({
+      examId: item._id.examId,
+      examName: perExamNameMap[examKey] || null,
+      avgScore: Number((item.avgScore ?? 0).toFixed(2)),
+      attempts: item.attempts || 0,
+    });
+    return acc;
+  }, {});
+
+  const enrichedUsers = users.map((user) => {
+    const unlockedExams = unlockedMap[user._id.toString()] || [];
+    const scoreInfo = overallMap[user._id.toString()];
+    const avgScoreByExam = perExamMap[user._id.toString()] || [];
+    return {
+      ...user,
+      unlockedExams,
+      unlockedExamCount: unlockedExams.length,
+      avgScore: scoreInfo?.avgScore ?? 0,
+      avgScoreByExam,
+    };
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Refunded users fetched",
+    data: { users: enrichedUsers, meta: { page, limit, total, totalPages } },
   });
 });
 
