@@ -2217,16 +2217,33 @@ export const processRefund = catchAsync(async (req, res) => {
       status: "refunded",
       reason: reason.trim(),
     });
-    await ExamAccess.findOneAndUpdate(
-      { userId: transaction.userId, examId: transaction.examId },
-      { paymentStatus: "refunded" }
-    );
     await ResourcePurchase.updateMany(
       { userId: transaction.userId, "metadata.professionalPlanPurchaseId": transaction._id },
       { $set: { status: "refunded" } }
     );
   } else {
     await transaction.save();
+  }
+
+  if (transactionType === "plan") {
+    await Promise.all([
+      User.findByIdAndUpdate(transaction.userId, {
+        subscriptionTier: "starter",
+        subscriptionStartedAt: null,
+        subscriptionExpiresAt: null,
+      }),
+      ExamAccess.updateMany(
+        { userId: transaction.userId, status: "unlocked" },
+        {
+          $set: {
+            status: "free",
+            paymentStatus: "refunded",
+            maxQuestionsPerSession: 2,
+            purchasedAt: null,
+          },
+        }
+      ),
+    ]);
   }
 
   sendResponse(res, {
