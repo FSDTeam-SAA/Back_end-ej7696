@@ -496,6 +496,40 @@ export const getSupportTickets = catchAsync(async (req, res) => {
   });
 });
 
+export const deleteSupportTicket = catchAsync(async (req, res) => {
+  if (!hasSupportManagerAccess(req.user)) {
+    throw new AppError(httpStatus.FORBIDDEN, "Access denied.");
+  }
+  const { ticketId } = req.params;
+  const ticket = await SupportTicket.findByIdAndDelete(ticketId);
+  if (!ticket) throw new AppError(httpStatus.NOT_FOUND, "Ticket not found");
+  await SupportMessage.deleteMany({ ticketId });
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Support ticket deleted",
+    data: { ticketId },
+  });
+});
+
+export const bulkDeleteSupportTickets = catchAsync(async (req, res) => {
+  if (!hasSupportManagerAccess(req.user)) {
+    throw new AppError(httpStatus.FORBIDDEN, "Access denied.");
+  }
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "ids array is required");
+  }
+  await SupportTicket.deleteMany({ _id: { $in: ids } });
+  await SupportMessage.deleteMany({ ticketId: { $in: ids } });
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: `${ids.length} ticket(s) deleted`,
+    data: { deleted: ids.length },
+  });
+});
+
 export const getSupportTicketDetails = catchAsync(async (req, res) => {
   const requesterId = req.user?._id;
   const requesterRole = req.user?.role?.toString().toLowerCase();
