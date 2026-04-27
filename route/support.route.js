@@ -1,6 +1,8 @@
 import express from "express";
 import {
+  bulkDeleteSupportTickets,
   createSupportTicket,
+  deleteSupportTicket,
   getSupportTicketDetails,
   getSupportTickets,
   receiveInboundSupportReply,
@@ -14,7 +16,9 @@ const router = express.Router();
 router.post("/", protect, upload.single("attachment"), createSupportTicket);
 router.get("/", protect, getSupportTickets);
 router.post("/inbound/email", upload.none(), receiveInboundSupportReply);
+router.delete("/bulk", protect, bulkDeleteSupportTickets);
 router.get("/:ticketId", protect, getSupportTicketDetails);
+router.delete("/:ticketId", protect, deleteSupportTicket);
 router.post(
   "/:ticketId/reply",
   protect,
