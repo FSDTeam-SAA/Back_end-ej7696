@@ -187,6 +187,20 @@ const normalizeAnswerValue = (value) => {
   return [value.toString().trim().toLowerCase()].filter(Boolean);
 };
 
+const extractVoiceAnalytics = (body = {}) => {
+  if (body.voiceAnalytics && typeof body.voiceAnalytics === "object") {
+    return body.voiceAnalytics;
+  }
+  const reviewData = body.reviewData;
+  if (!reviewData || typeof reviewData !== "object") return null;
+  if (reviewData.voiceAnalytics && typeof reviewData.voiceAnalytics === "object") {
+    return reviewData.voiceAnalytics;
+  }
+  return reviewData.voicePracticeMode || reviewData.voiceModeUsage
+    ? reviewData
+    : null;
+};
+
 const mergeIndexedArray = (existing, updates) => {
   const base = Array.isArray(existing) ? [...existing] : [];
   if (!Array.isArray(updates)) return base;
@@ -1270,6 +1284,7 @@ export const submitExamAnswers = catchAsync(async (req, res) => {
     ? req.body.flaggedQuestionIds.map((f) => f?.toString())
     : [];
   const reviewData = req.body?.reviewData ?? null;
+  const voiceAnalytics = extractVoiceAnalytics(req.body);
 
   const details = [];
   let correct = 0;
@@ -1351,6 +1366,7 @@ export const submitExamAnswers = catchAsync(async (req, res) => {
         timeSpentSec: d.timeSpentSec,
       })),
       reviewData,
+      voiceAnalytics,
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
@@ -1362,6 +1378,7 @@ export const submitExamAnswers = catchAsync(async (req, res) => {
     data: {
       score,
       details,
+      voiceAnalytics,
       cachedQuestionsVersion: cache.updatedAt,
     },
   });
