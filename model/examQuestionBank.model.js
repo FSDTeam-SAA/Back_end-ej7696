@@ -33,6 +33,11 @@ const examQuestionBankSchema = new Schema(
     questionTextNormalized: { type: String, required: true, trim: true },
     question: {
       question: { type: String, required: true, trim: true },
+      questionType: {
+        type: String,
+        enum: ["single", "multi", "true_false"],
+        default: "single",
+      },
       options: { type: [questionOptionSchema], default: [] },
       explanation: { type: String, default: "" },
       category: { type: String, default: "" },

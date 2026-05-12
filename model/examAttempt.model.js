@@ -26,6 +26,7 @@ const examAttemptSchema = new Schema(
       },
     ],
     reviewData: { type: Schema.Types.Mixed, default: null },
+    voiceAnalytics: { type: Schema.Types.Mixed, default: null },
   },
   { timestamps: true }
 );
