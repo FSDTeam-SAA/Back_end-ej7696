@@ -369,8 +369,29 @@ function normalizeQuestionCandidate(rawQuestion, index) {
     is_correct: option.is_correct,
   }));
 
+  const rawType = normalizeWhitespace(rawQuestion.type ?? rawQuestion.questionType)
+    .toLowerCase();
+  const normalizedOptionTexts = options.map((option) =>
+    normalizeComparable(option.option)
+  );
+  const isTrueFalse =
+    rawType.includes("true") ||
+    rawType.includes("false") ||
+    (normalizedOptionTexts.length === 2 &&
+      normalizedOptionTexts.includes("true") &&
+      normalizedOptionTexts.includes("false"));
+  const questionType = isTrueFalse
+    ? "true_false"
+    : rawType.includes("multi") ||
+        rawType.includes("multiple") ||
+        rawType.includes("select all") ||
+        correctCount > 1
+      ? "multi"
+      : "single";
+
   const canonicalQuestion = {
     question,
+    questionType,
     options: shuffledOptions,
     explanation: normalizeWhitespace(rawQuestion.explanation ?? rawQuestion.rationale),
     category: normalizeWhitespace(
