@@ -12,6 +12,7 @@ import {
   normalizeReferralCode,
   validateReferralAtSignup,
 } from "../utils/referral.service.js";
+import { isDeviceBlockingEnabled } from "../utils/deviceBlocking.js";
 
 const createSessionId = () =>
   `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
@@ -47,13 +48,18 @@ const buildDeviceMismatchData = () => ({
 const isInstallationLockBypassRole = (user) =>
   user?.role?.toString().toLowerCase() === "admin";
 
-const buildJwtPayload = (user, sessionId, installationId) => ({
-  _id: user._id,
-  email: user.email,
-  role: user.role,
-  sid: sessionId,
-  iid: installationId,
-});
+const buildJwtPayload = (user, sessionId, installationId) => {
+  const payload = {
+    _id: user._id,
+    email: user.email,
+    role: user.role,
+    sid: sessionId,
+  };
+  if (isDeviceBlockingEnabled()) {
+    payload.iid = installationId;
+  }
+  return payload;
+};
 
 const parseRole = (value) => {
   if (value === undefined || value === null || value === "") return undefined;
@@ -88,7 +94,7 @@ export const register = catchAsync(async (req, res) => {
     );
 
   const installationId = resolveInstallationId(req);
-  if (!installationId) {
+  if (isDeviceBlockingEnabled() && !installationId) {
     throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
   }
 
@@ -138,7 +144,9 @@ export const register = catchAsync(async (req, res) => {
   );
   user.refreshToken = refreshToken;
   user.activeSessionId = sessionId;
-  setStoredInstallationId(user, installationId);
+  if (isDeviceBlockingEnabled()) {
+    setStoredInstallationId(user, installationId);
+  }
   await user.save();
 
   if (referrer) {
@@ -200,13 +208,14 @@ export const login = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
   }
   const installationId = resolveInstallationId(req);
-  if (!installationId) {
+  if (isDeviceBlockingEnabled() && !installationId) {
     throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
   }
 
   // Admins can rotate their active installation by logging in again.
   const activeInstallationId = getStoredInstallationId(user);
   if (
+    isDeviceBlockingEnabled() &&
     !isInstallationLockBypassRole(user) &&
     activeInstallationId &&
     activeInstallationId !== installationId
@@ -257,7 +266,9 @@ export const login = catchAsync(async (req, res) => {
 
   user.refreshToken = refreshToken;
   user.activeSessionId = sessionId;
-  setStoredInstallationId(user, installationId);
+  if (isDeviceBlockingEnabled()) {
+    setStoredInstallationId(user, installationId);
+  }
   await user.save();
 
   res.cookie("refreshToken", refreshToken, {
@@ -288,8 +299,16 @@ export const login = catchAsync(async (req, res) => {
 export const requestDeviceReset = catchAsync(async (req, res) => {
   const { email, password } = req.body;
   const installationId = resolveInstallationId(req);
-  if (!installationId) {
+  if (isDeviceBlockingEnabled() && !installationId) {
     throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
+  }
+  if (!isDeviceBlockingEnabled()) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Device verification is disabled",
+      data: { relinked: false },
+    });
   }
   if (!email || !password) {
     throw new AppError(httpStatus.BAD_REQUEST, "Email and password are required");
@@ -370,8 +389,16 @@ export const requestDeviceReset = catchAsync(async (req, res) => {
 export const verifyDeviceReset = catchAsync(async (req, res) => {
   const { email, otp } = req.body;
   const installationId = resolveInstallationId(req);
-  if (!installationId) {
+  if (isDeviceBlockingEnabled() && !installationId) {
     throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
+  }
+  if (!isDeviceBlockingEnabled()) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Device verification is disabled",
+      data: { relinked: false },
+    });
   }
   if (!email) {
     throw new AppError(httpStatus.BAD_REQUEST, "Email is required");
@@ -569,7 +596,7 @@ export const refreshToken = catchAsync(async (req, res) => {
     throw new AppError(400, "Refresh token is required");
   }
   const installationId = resolveInstallationId(req);
-  if (!installationId) {
+  if (isDeviceBlockingEnabled() && !installationId) {
     throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
   }
 
@@ -581,12 +608,14 @@ export const refreshToken = catchAsync(async (req, res) => {
   if (!decoded.sid || !user.activeSessionId || decoded.sid !== user.activeSessionId) {
     throw new AppError(401, "Session expired. Please login again.");
   }
-  if (!decoded.iid || decoded.iid !== installationId) {
-    throw new AppError(401, "Session expired. Please login again.");
-  }
-  const activeInstallationId = getStoredInstallationId(user);
-  if (!activeInstallationId || activeInstallationId !== installationId) {
-    throw new AppError(401, "Session expired. Please login again.");
+  if (isDeviceBlockingEnabled()) {
+    if (!decoded.iid || decoded.iid !== installationId) {
+      throw new AppError(401, "Session expired. Please login again.");
+    }
+    const activeInstallationId = getStoredInstallationId(user);
+    if (!activeInstallationId || activeInstallationId !== installationId) {
+      throw new AppError(401, "Session expired. Please login again.");
+    }
   }
   if (user.status !== "active") {
     throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
