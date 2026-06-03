@@ -6,8 +6,10 @@ import {
   logout,
   refreshToken,
   register,
+  requestDeviceReset,
   resetPassword,
   updateUserRole,
+  verifyDeviceReset,
   verifyEmail,
 } from "../controller/auth.controller.js";
 import { isAdmin, protect } from "../middleware/auth.middleware.js";
@@ -16,6 +18,8 @@ const router = express.Router();
 
 router.post("/register", register);
 router.post("/login", login);
+router.post("/request-device-reset", requestDeviceReset);
+router.post("/verify-device-reset", verifyDeviceReset);
 router.post("/verify", verifyEmail);
 router.post("/forget", forgetPassword);
 router.post("/reset-password", resetPassword);

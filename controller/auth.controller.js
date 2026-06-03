@@ -36,6 +36,14 @@ const setStoredInstallationId = (user, installationId) => {
   user.activeInstallationId = installationId;
 };
 
+const DEVICE_MISMATCH_CODE = "DEVICE_MISMATCH";
+const DEVICE_RESET_REQUEST_COOLDOWN_MS = 60 * 1000;
+
+const buildDeviceMismatchData = () => ({
+  code: DEVICE_MISMATCH_CODE,
+  can_request_device_reset: true,
+});
+
 const isInstallationLockBypassRole = (user) =>
   user?.role?.toString().toLowerCase() === "admin";
 
@@ -206,11 +214,9 @@ export const login = catchAsync(async (req, res) => {
     return sendResponse(res, {
       statusCode: httpStatus.CONFLICT,
       success: false,
-      message: "This account is already locked to another installation",
-      data: {
-        activeInstallationId,
-        adminResetRequired: true,
-      },
+      code: DEVICE_MISMATCH_CODE,
+      message: "This account is already linked to another installation.",
+      data: buildDeviceMismatchData(),
     });
   }
   if (!(await User.isOTPVerified(user._id))) {
@@ -276,6 +282,141 @@ export const login = catchAsync(async (req, res) => {
       mustChangePassword: Boolean(user.mustChangePassword),
       user: userObj,
     },
+  });
+});
+
+export const requestDeviceReset = catchAsync(async (req, res) => {
+  const { email, password } = req.body;
+  const installationId = resolveInstallationId(req);
+  if (!installationId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
+  }
+  if (!email || !password) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Email and password are required");
+  }
+
+  const user = await User.isUserExistsByEmail(email);
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+  if (
+    user?.password &&
+    !(await User.isPasswordMatched(password, user.password))
+  ) {
+    throw new AppError(httpStatus.FORBIDDEN, "Password is not correct");
+  }
+  if (user.status !== "active") {
+    throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
+  }
+
+  const activeInstallationId = getStoredInstallationId(user);
+  if (!activeInstallationId) {
+    setStoredInstallationId(user, installationId);
+    await user.save();
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Device linked successfully",
+      data: { relinked: true },
+    });
+  }
+  if (activeInstallationId === installationId || isInstallationLockBypassRole(user)) {
+    return sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "This installation is already linked",
+      data: { relinked: false },
+    });
+  }
+
+  const lastRequestedAt = user.deviceResetInfo?.requestedAt;
+  if (
+    lastRequestedAt &&
+    Date.now() - new Date(lastRequestedAt).getTime() < DEVICE_RESET_REQUEST_COOLDOWN_MS
+  ) {
+    throw new AppError(
+      httpStatus.TOO_MANY_REQUESTS,
+      "Please wait before requesting another device verification OTP"
+    );
+  }
+
+  const otp = generateOTP();
+  const otpToken = createToken(
+    { otp, iid: installationId, purpose: "device-reset" },
+    process.env.OTP_SECRET,
+    process.env.OTP_EXPIRE
+  );
+
+  user.deviceResetInfo = {
+    token: otpToken,
+    requestedAt: new Date(),
+  };
+  await user.save();
+
+  await sendEmail(
+    user.email,
+    "Verify Device Relink",
+    `Your device verification OTP is ${otp}`
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Device verification OTP sent to your email",
+    data: { email: user.email },
+  });
+});
+
+export const verifyDeviceReset = catchAsync(async (req, res) => {
+  const { email, otp } = req.body;
+  const installationId = resolveInstallationId(req);
+  if (!installationId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Installation identifier is required");
+  }
+  if (!email) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Email is required");
+  }
+  if (!otp) {
+    throw new AppError(httpStatus.BAD_REQUEST, "OTP is required");
+  }
+
+  const user = await User.isUserExistsByEmail(email);
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+  if (user.status !== "active") {
+    throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
+  }
+  if (!user.deviceResetInfo?.token) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Device verification token missing");
+  }
+
+  let decoded;
+  try {
+    decoded = verifyToken(user.deviceResetInfo.token, process.env.OTP_SECRET);
+  } catch (err) {
+    throw new AppError(httpStatus.BAD_REQUEST, "OTP expired or invalid");
+  }
+
+  if (
+    decoded.purpose !== "device-reset" ||
+    decoded.iid !== installationId ||
+    decoded.otp !== otp
+  ) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid OTP");
+  }
+
+  setStoredInstallationId(user, installationId);
+  user.refreshToken = "";
+  user.activeSessionId = "";
+  user.deviceResetInfo = { token: "", requestedAt: null };
+  await user.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Device re-linked successfully. Please log in again.",
+    data: { relinked: true },
   });
 });
 

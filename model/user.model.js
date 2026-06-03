@@ -218,6 +218,10 @@ const userSchema = new Schema(
     activeSessionId: { type: String, default: "" },
     activeDeviceId: { type: String, default: "" },
     activeInstallationId: { type: String, default: "" },
+    deviceResetInfo: {
+      token: { type: String, default: "" },
+      requestedAt: { type: Date, default: null },
+    },
     review: [
       {
         rating: {
