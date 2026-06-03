@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import httpStatus from "http-status";
 import AppError from "../errors/AppError.js";
 import { User } from "./../model/user.model.js";
+import { isDeviceBlockingEnabled } from "../utils/deviceBlocking.js";
 
 const INSTALLATION_HEADER_KEY = "x-app-installation-id";
 const FALLBACK_INSTALLATION_HEADER_KEY = "x-installation-id";
@@ -40,6 +41,8 @@ const normalizeExpiredProfessionalSubscription = async (user) => {
 };
 
 const validateInstallationContext = (req, decoded, user) => {
+  if (!isDeviceBlockingEnabled()) return;
+
   const requestInstallationId = resolveRequestInstallationId(req);
   const activeInstallationId = getStoredInstallationId(user);
 
