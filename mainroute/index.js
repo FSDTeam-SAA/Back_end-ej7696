@@ -12,7 +12,6 @@ import supportRoute from "../route/support.route.js";
 import configRoute from "../route/config.route.js";
 import resourceRoute from "../route/resource.route.js";
 import referralRoute from "../route/referral.route.js";
-import planRoute from "../route/plan.route.js";
 
 const router = express.Router();
 
@@ -28,7 +27,6 @@ router.use("/admin", adminRoute);
 router.use("/support", supportRoute);
 router.use("/resources", resourceRoute);
 router.use("/referrals", referralRoute);
-router.use("/plans", planRoute);
 
 router.use("/", configRoute);
 
