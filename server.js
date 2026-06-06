@@ -40,6 +40,7 @@ const defaultAllowedOrigins = [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   "http://10.10.5.49:3000",
+  "http://localhost:3003",
   "http://10.10.5.49",
 ];
 
