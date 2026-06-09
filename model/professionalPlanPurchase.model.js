@@ -16,7 +16,7 @@ const professionalPlanPurchaseSchema = new Schema(
     },
     provider: {
       type: String,
-      enum: ["stripe", "paypal", "manual"],
+      enum: ["stripe", "paypal", "apple", "manual"],
       required: true,
     },
     status: {
@@ -105,6 +105,24 @@ const professionalPlanPurchaseSchema = new Schema(
       trim: true,
       default: undefined,
     },
+    appleProductId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    appleTransactionId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    appleOriginalTransactionId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     paymentAccountFingerprint: {
       type: String,
       trim: true,
@@ -161,6 +179,15 @@ professionalPlanPurchaseSchema.index(
     unique: true,
     partialFilterExpression: {
       paypalOrderId: { $exists: true, $type: "string", $ne: "" },
+    },
+  }
+);
+professionalPlanPurchaseSchema.index(
+  { appleTransactionId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      appleTransactionId: { $exists: true, $type: "string", $ne: "" },
     },
   }
 );
