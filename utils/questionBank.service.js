@@ -34,6 +34,29 @@ const QUESTION_SERVICE_RETRY_DELAY_MS =
 const QUESTION_SERVICE_DEFAULT_EXAM_TYPE =
   process.env.QUESTION_SERVICE_DEFAULT_EXAM_TYPE?.toString().trim() ||
   "closed_book";
+const QUESTION_GENERATION_ENDPOINTS = [
+  {
+    key: "single_choice",
+    type: "single_choice",
+    path: "/api/gen-single-choice-question",
+    weight: Number(process.env.QUESTION_BANK_SINGLE_CHOICE_WEIGHT) || 50,
+  },
+  {
+    key: "true_false",
+    type: "true_false",
+    path: "/api/gen-true-false-question",
+    weight: Number(process.env.QUESTION_BANK_TRUE_FALSE_WEIGHT) || 30,
+  },
+  {
+    key: "multiple_answer",
+    type: "multiple_answer",
+    path: "/api/gen-multiple-answer-question",
+    weight: Number(process.env.QUESTION_BANK_MULTIPLE_ANSWER_WEIGHT) || 10,
+  },
+];
+const QUESTION_GENERATION_ENDPOINT_PATHS = QUESTION_GENERATION_ENDPOINTS.map(
+  (endpoint) => endpoint.path
+);
 
 const QUESTION_BANK_MIN_BATCH_SIZE = 1;
 const QUESTION_BANK_MAX_BATCH_SIZE = Math.max(
@@ -86,27 +109,51 @@ function ensureTrailingSlashVariants(url, collector) {
   collector.add(trimmed.replace(/\/+$/, ""));
 }
 
-function buildQuestionServiceUrlCandidates() {
+function isQuestionGenerationEndpointPath(pathname = "") {
+  const normalizedPath = `/${pathname}`.replace(/\/+/g, "/").replace(/\/$/, "");
+  return QUESTION_GENERATION_ENDPOINT_PATHS.some(
+    (endpointPath) => normalizedPath === endpointPath.replace(/\/$/, "")
+  );
+}
+
+function buildQuestionServiceUrlCandidates(endpointPath) {
   const set = new Set();
   const seedUrls = [QUESTION_SERVICE_URL, ...QUESTION_SERVICE_FALLBACK_URLS];
-  seedUrls.forEach((url) => ensureTrailingSlashVariants(url, set));
 
-  for (const candidate of Array.from(set)) {
+  seedUrls.forEach((url) => {
+    const trimmed = (url || "").toString().trim();
+    if (!trimmed) return;
+
     try {
-      const parsed = new URL(candidate);
+      const parsed = new URL(trimmed);
       const origin = `${parsed.protocol}//${parsed.host}`;
       if (!parsed.pathname || parsed.pathname === "/") {
-        ensureTrailingSlashVariants(`${origin}/api/gen-question`, set);
+        ensureTrailingSlashVariants(`${origin}${endpointPath}`, set);
+        return;
       }
+
+      if (isQuestionGenerationEndpointPath(parsed.pathname)) {
+        ensureTrailingSlashVariants(`${origin}${endpointPath}`, set);
+        return;
+      }
+
+      ensureTrailingSlashVariants(trimmed, set);
+      ensureTrailingSlashVariants(`${origin}${endpointPath}`, set);
     } catch (error) {
       // Ignore invalid URL candidates and rely on valid ones.
     }
-  }
+  });
 
   return Array.from(set);
 }
 
-const QUESTION_SERVICE_URL_CANDIDATES = buildQuestionServiceUrlCandidates();
+const QUESTION_SERVICE_URL_CANDIDATES_BY_TYPE = QUESTION_GENERATION_ENDPOINTS.reduce(
+  (acc, endpoint) => {
+    acc[endpoint.key] = buildQuestionServiceUrlCandidates(endpoint.path);
+    return acc;
+  },
+  {}
+);
 
 function parseBoolean(value) {
   if (value === undefined || value === null) return false;
@@ -471,7 +518,7 @@ function resolveQuestionServiceTimeoutMs(nQuestion) {
 }
 
 async function sendGenerationRequest(payload, useForm, serviceUrl, timeoutMs) {
-  if (!QUESTION_SERVICE_URL_CANDIDATES.length) {
+  if (!QUESTION_SERVICE_URL) {
     throw new AppError(
       httpStatus.BAD_GATEWAY,
       "QUESTION_SERVICE_URL is not configured"
@@ -583,10 +630,75 @@ function isBodyParseError(responseStatus, result, rawText) {
   return parsingError || (responseStatus === 422 && missingFields);
 }
 
-export async function requestQuestionBatchFromAI({
+function calculateQuestionTypeDistribution(nQuestion) {
+  const safeTotal = Math.max(Math.ceil(Number(nQuestion) || 0), 0);
+  if (!safeTotal) return [];
+
+  const activeEndpoints = QUESTION_GENERATION_ENDPOINTS.filter(
+    (endpoint) => Number(endpoint.weight) > 0
+  );
+  const totalWeight = activeEndpoints.reduce(
+    (total, endpoint) => total + Number(endpoint.weight || 0),
+    0
+  );
+
+  if (!activeEndpoints.length || totalWeight <= 0) {
+    return [];
+  }
+
+  const distribution = activeEndpoints.map((endpoint) => {
+    const exact = (safeTotal * Number(endpoint.weight || 0)) / totalWeight;
+    return {
+      ...endpoint,
+      exact,
+      count: Math.floor(exact),
+    };
+  });
+
+  let assignedCount = distribution.reduce((total, item) => total + item.count, 0);
+  const orderedRemainders = [...distribution].sort((left, right) => {
+    const remainderDiff =
+      right.exact - Math.floor(right.exact) - (left.exact - Math.floor(left.exact));
+    if (remainderDiff !== 0) return remainderDiff;
+    return Number(right.weight || 0) - Number(left.weight || 0);
+  });
+
+  let remainderIndex = 0;
+  while (assignedCount < safeTotal && orderedRemainders.length > 0) {
+    orderedRemainders[remainderIndex % orderedRemainders.length].count += 1;
+    assignedCount += 1;
+    remainderIndex += 1;
+  }
+
+  return distribution
+    .filter((item) => item.count > 0)
+    .map(({ exact, ...item }) => item);
+}
+
+function addQuestionTypeHints(question, questionType, sourceIndex) {
+  if (!question || typeof question !== "object" || Array.isArray(question)) {
+    return question;
+  }
+
+  return {
+    ...question,
+    type: question.type || questionType,
+    questionType: question.questionType || questionType,
+    metadata: {
+      ...(question.metadata && typeof question.metadata === "object"
+        ? question.metadata
+        : {}),
+      requestedQuestionType: questionType,
+      requestedTypeIndex: sourceIndex,
+    },
+  };
+}
+
+async function requestQuestionTypeFromAI({
   exam,
   nQuestion,
-  examType = QUESTION_SERVICE_DEFAULT_EXAM_TYPE || "closed_book",
+  examType,
+  endpoint,
 }) {
   const timeoutMs = resolveQuestionServiceTimeoutMs(nQuestion);
   const payload = {
@@ -598,7 +710,8 @@ export async function requestQuestionBatchFromAI({
   };
 
   const useFormFirst = QUESTION_SERVICE_MODE !== "json";
-  if (!QUESTION_SERVICE_URL_CANDIDATES.length) {
+  const serviceUrlCandidates = QUESTION_SERVICE_URL_CANDIDATES_BY_TYPE[endpoint.key] || [];
+  if (!serviceUrlCandidates.length) {
     throw new AppError(
       httpStatus.BAD_GATEWAY,
       "QUESTION_SERVICE_URL is not configured"
@@ -608,7 +721,7 @@ export async function requestQuestionBatchFromAI({
   let lastError = null;
   let lastNotFoundMessage = "";
 
-  for (const serviceUrl of QUESTION_SERVICE_URL_CANDIDATES) {
+  for (const serviceUrl of serviceUrlCandidates) {
     try {
       let response = await sendGenerationRequestWithRetry(
         payload,
@@ -633,7 +746,8 @@ export async function requestQuestionBatchFromAI({
       if (!response.ok) {
         const snippet =
           (rawText || (result ? JSON.stringify(result) : "")).slice(0, 500) || "";
-        const message = `Question service error (${response.status}). ${snippet}`.trim();
+        const message =
+          `Question service error (${response.status}) for ${endpoint.type}. ${snippet}`.trim();
 
         if (response.status === httpStatus.NOT_FOUND) {
           lastNotFoundMessage = message;
@@ -646,7 +760,7 @@ export async function requestQuestionBatchFromAI({
       if (!result && !rawText) {
         throw new AppError(
           httpStatus.BAD_GATEWAY,
-          "Question service returned an empty response"
+          `Question service returned an empty response for ${endpoint.type}`
         );
       }
 
@@ -656,15 +770,19 @@ export async function requestQuestionBatchFromAI({
       if (!Array.isArray(questions) || questions.length === 0) {
         throw new AppError(
           httpStatus.BAD_GATEWAY,
-          "Question service returned an invalid questions payload"
+          `Question service returned an invalid ${endpoint.type} questions payload`
         );
       }
 
       return {
+        type: endpoint.type,
+        requestedCount: nQuestion,
         status: result?.status ?? "success",
         statusCode: result?.status_code ?? response.status,
         rawResponse: result ?? rawText,
-        questions,
+        questions: questions.map((question, index) =>
+          addQuestionTypeHints(question, endpoint.type, index)
+        ),
         serviceUrl,
       };
     } catch (error) {
@@ -675,6 +793,7 @@ export async function requestQuestionBatchFromAI({
           error.statusCode === httpStatus.REQUEST_TIMEOUT;
         if (isGatewayError) continue;
       }
+      throw error;
     }
   }
 
@@ -688,6 +807,58 @@ export async function requestQuestionBatchFromAI({
   if (lastError) throw lastError;
 
   throw new AppError(httpStatus.BAD_GATEWAY, "Failed to reach question service");
+}
+
+export async function requestQuestionBatchFromAI({
+  exam,
+  nQuestion,
+  examType = QUESTION_SERVICE_DEFAULT_EXAM_TYPE || "closed_book",
+}) {
+  const distribution = calculateQuestionTypeDistribution(nQuestion);
+  if (!distribution.length) {
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      "Question type distribution is not configured"
+    );
+  }
+
+  const responses = await Promise.all(
+    distribution.map((endpoint) =>
+      requestQuestionTypeFromAI({
+        exam,
+        nQuestion: endpoint.count,
+        examType,
+        endpoint,
+      })
+    )
+  );
+  const questions = responses.flatMap((response) => response.questions || []);
+
+  return {
+    status: responses.every((response) => response.status === "success")
+      ? "success"
+      : "partial",
+    statusCode: responses.map((response) => response.statusCode),
+    rawResponse: {
+      distribution: distribution.map((endpoint) => ({
+        type: endpoint.type,
+        requestedCount: endpoint.count,
+        weight: endpoint.weight,
+      })),
+      responses: responses.map((response) => ({
+        type: response.type,
+        requestedCount: response.requestedCount,
+        generatedCount: response.questions.length,
+        status: response.status,
+        statusCode: response.statusCode,
+        serviceUrl: response.serviceUrl,
+        rawResponse: response.rawResponse,
+      })),
+    },
+    questions,
+    serviceUrl: responses.map((response) => response.serviceUrl),
+    distribution,
+  };
 }
 
 function parseAiValidationResponse(payload, totalCount) {
