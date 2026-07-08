@@ -8,6 +8,8 @@ import {
   createProfessionalPlanOrder,
   createProfessionalPlanStripePaymentIntent,
   captureProfessionalPlanOrder,
+  verifyAppleExamPurchase,
+  verifyAppleProfessionalPlanPurchase,
   getRevenueSummary,
   getProfessionalPlan,
   getPricingSettings,
@@ -48,6 +50,12 @@ router.post(
   "/plan/professional/stripe/confirm",
   protect,
   confirmProfessionalPlanStripePayment
+);
+router.post("/apple/exam/:examId/verify", protect, verifyAppleExamPurchase);
+router.post(
+  "/apple/plan/professional/verify",
+  protect,
+  verifyAppleProfessionalPlanPurchase
 );
 router.get("/plan/professional", optionalProtect, getProfessionalPlan);
 router.post("/admin/exams/unlock-bulk", protect, requirePermission("manual_exam_unlocks"), manualUnlockExamsBulk);

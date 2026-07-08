@@ -75,6 +75,7 @@ const parseRole = (value) => {
 
 export const register = catchAsync(async (req, res) => {
   const { phone, name, email, password, confirmPassword } = req.body;
+  const trimmedPhone = phone?.toString().trim();
 
   if (!email || !password) {
     throw new AppError(httpStatus.FORBIDDEN, "Please fill in all fields");
@@ -117,10 +118,10 @@ export const register = catchAsync(async (req, res) => {
   const generatedReferralCode = await generateUniqueReferralCode();
 
   const user = await User.create({
-    phone,
     name,
     email,
     password,
+    ...(trimmedPhone ? { phone: trimmedPhone } : {}),
     referralCode: generatedReferralCode,
     referredBy: referrer?._id || null,
     referredByCode: referrer?.referralCode || "",
