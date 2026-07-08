@@ -40,6 +40,22 @@ const DEFAULT_CURRENCY = process.env.EXAM_PRICE_CURRENCY || "USD";
 const DEFAULT_PRO_PLAN_INTERVAL_COUNT = 3;
 const DEFAULT_PRO_PLAN_INTERVAL_UNIT = "months";
 const DEFAULT_PRO_PLAN_DESCRIPTION = "What's included in your plan";
+const APPLE_PROFESSIONAL_PRODUCT_ID = "six_month_subscriptions";
+const EXAM_IAP_PRODUCT_IDS = {
+  API_1184: "com.inspectorspath.exam.api1184.unlock",
+  API_510: "com.inspectorspath.exam.api510.unlock",
+  API_570: "com.inspectorspath.exam.api570.unlock",
+  API_653: "com.inspectorspath.exam.api653.unlock",
+  API_936: "com.inspectorspath.exam.api936.unlock",
+  API_1169: "com.inspectorspath.exam.api1169.unlock",
+  API_SIEE: "com.inspectorspath.exam.siee.unlock",
+  API_SIFE: "com.inspectorspath.exam.sife.unlock",
+  API_SIRE: "com.inspectorspath.exam.sire.unlock",
+};
+const APPLE_VERIFY_PRODUCTION_URL =
+  "https://buy.itunes.apple.com/verifyReceipt";
+const APPLE_VERIFY_SANDBOX_URL =
+  "https://sandbox.itunes.apple.com/verifyReceipt";
 const DEFAULT_PRO_PLAN_FEATURES = [
   "Access to selected free exams",
   "Full-length mock exams",
@@ -455,6 +471,129 @@ const upsertExamAccessSafely = async (filter, update, options = {}) => {
 
     return ExamAccess.findOneAndUpdate(filter, update, { new: true });
   }
+};
+
+const normalizeExamIapCode = (value = "") => {
+  const normalized = value
+    .toString()
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (EXAM_IAP_PRODUCT_IDS[normalized]) return normalized;
+  const match = normalized.match(/API_?(1184|510|570|653|936|1169|SIEE|SIFE|SIRE)/);
+  return match ? `API_${match[1]}` : "";
+};
+
+const resolveExamAppleProductId = (exam) => {
+  const code =
+    normalizeExamIapCode(exam?.code) ||
+    normalizeExamIapCode(exam?.examCode) ||
+    normalizeExamIapCode(exam?.slug) ||
+    normalizeExamIapCode(exam?.name);
+  return code ? EXAM_IAP_PRODUCT_IDS[code] : "";
+};
+
+const appleReceiptPassword = () =>
+  process.env.APPLE_SHARED_SECRET ||
+  process.env.APP_STORE_SHARED_SECRET ||
+  process.env.APPLE_APP_SHARED_SECRET ||
+  "";
+
+const postAppleReceipt = async (url, receiptData) => {
+  const body = {
+    "receipt-data": receiptData,
+    "exclude-old-transactions": false,
+  };
+  const password = appleReceiptPassword();
+  if (password) body.password = password;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return response.json().catch(() => null);
+};
+
+const verifyAppleReceipt = async (receiptData) => {
+  if (!receiptData || !receiptData.toString().trim()) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Apple receipt data is required");
+  }
+
+  let data = await postAppleReceipt(APPLE_VERIFY_PRODUCTION_URL, receiptData);
+  if (data?.status === 21007) {
+    data = await postAppleReceipt(APPLE_VERIFY_SANDBOX_URL, receiptData);
+  } else if (data?.status === 21008) {
+    data = await postAppleReceipt(APPLE_VERIFY_PRODUCTION_URL, receiptData);
+  }
+
+  if (!data || data.status !== 0) {
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      `Apple receipt verification failed${data?.status ? ` (${data.status})` : ""}`
+    );
+  }
+
+  return data;
+};
+
+const appleTransactionsFromReceipt = (verification) => {
+  const receiptItems = Array.isArray(verification?.receipt?.in_app)
+    ? verification.receipt.in_app
+    : [];
+  const latestItems = Array.isArray(verification?.latest_receipt_info)
+    ? verification.latest_receipt_info
+    : [];
+  return [...latestItems, ...receiptItems];
+};
+
+const findAppleTransaction = ({ verification, productId, transactionId }) => {
+  const expectedTransactionId = transactionId?.toString().trim() || "";
+  const matches = appleTransactionsFromReceipt(verification).filter(
+    (item) => item?.product_id === productId
+  );
+  if (!matches.length) return null;
+  if (!expectedTransactionId) return matches[0];
+  return (
+    matches.find(
+      (item) =>
+        item?.transaction_id === expectedTransactionId ||
+        item?.original_transaction_id === expectedTransactionId
+    ) || matches[0]
+  );
+};
+
+const assertAppleTransactionActive = (transaction) => {
+  if (!transaction) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Apple transaction not found");
+  }
+  if (transaction.cancellation_date || transaction.cancellation_date_ms) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Apple transaction was cancelled");
+  }
+  if (transaction.expires_date_ms) {
+    const expiresAt = new Date(Number(transaction.expires_date_ms));
+    if (Number.isFinite(expiresAt.getTime()) && expiresAt <= new Date()) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Apple subscription is expired");
+    }
+  }
+};
+
+const appleVerificationPayload = (body = {}) => {
+  const verificationData = body.verificationData || {};
+  return {
+    productId: body.productId?.toString().trim() || "",
+    transactionId:
+      body.transactionId?.toString().trim() ||
+      body.purchaseID?.toString().trim() ||
+      "",
+    receiptData:
+      verificationData.serverVerificationData?.toString().trim() ||
+      verificationData.localVerificationData?.toString().trim() ||
+      "",
+    source: verificationData.source?.toString().trim() || "app_store",
+    purchaseStatus: body.purchaseStatus?.toString().trim() || "",
+  };
 };
 
 const buildExamCheckoutContext = async ({ user, addonSelection }) => {
@@ -1515,6 +1654,238 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
     });
   }
 );
+
+export const verifyAppleExamPurchase = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  const examId = req.params.examId;
+  if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+  if (!examId) throw new AppError(httpStatus.BAD_REQUEST, "examId is required");
+
+  const [user, exam] = await Promise.all([
+    User.findById(userId),
+    Exam.findById(examId).lean(),
+  ]);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+
+  const expectedProductId = resolveExamAppleProductId(exam);
+  const payload = appleVerificationPayload(req.body);
+  if (!expectedProductId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Apple product is not configured for this exam");
+  }
+  if (payload.productId !== expectedProductId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Apple product does not match exam");
+  }
+
+  const verification = await verifyAppleReceipt(payload.receiptData);
+  const transaction = findAppleTransaction({
+    verification,
+    productId: expectedProductId,
+    transactionId: payload.transactionId,
+  });
+  assertAppleTransactionActive(transaction);
+
+  const appleTransactionId =
+    transaction.transaction_id?.toString().trim() || payload.transactionId;
+  const appleOriginalTransactionId =
+    transaction.original_transaction_id?.toString().trim() || appleTransactionId;
+
+  const duplicate = await ExamAccess.findOne({
+    appleTransactionId,
+    userId: { $ne: userId },
+  }).lean();
+  if (duplicate) {
+    throw new AppError(httpStatus.CONFLICT, "Apple transaction already belongs to another account");
+  }
+
+  const pricing = await getPricing();
+  const updatedAccess = await upsertExamAccessSafely(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      status: "unlocked",
+      paymentStatus: "completed",
+      purchaseType: "exam",
+      currency: pricing.currency || DEFAULT_CURRENCY,
+      basePrice: pricing.examUnlockPrice ?? DEFAULT_EXAM_PRICE,
+      purchasePrice: pricing.examUnlockPrice ?? DEFAULT_EXAM_PRICE,
+      totalAmount: pricing.examUnlockPrice ?? DEFAULT_EXAM_PRICE,
+      maxQuestionsPerSession: 30,
+      appleProductId: expectedProductId,
+      appleTransactionId,
+      appleOriginalTransactionId,
+      paymentAccountFingerprint: appleOriginalTransactionId
+        ? `apple:${appleOriginalTransactionId}`
+        : "",
+      purchasedAt: transaction.purchase_date_ms
+        ? new Date(Number(transaction.purchase_date_ms))
+        : new Date(),
+      metadata: {
+        provider: "apple",
+        appleEnvironment: verification.environment || "",
+        appleReceiptStatus: verification.status,
+        purchaseStatus: payload.purchaseStatus,
+        verificationSource: payload.source,
+      },
+    }
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Apple exam purchase verified",
+    data: {
+      unlocked: true,
+      purchaseType: "exam",
+      title: exam.name || "Exam Unlock",
+      amountPaid: updatedAccess.purchasePrice || 0,
+      currency: updatedAccess.currency || DEFAULT_CURRENCY,
+      paymentMethodLabel: "Apple In-App Purchase",
+      receiptNumber: appleTransactionId,
+      transactionReference: appleTransactionId,
+      paidAt: updatedAccess.purchasedAt,
+      provider: "apple",
+      access: updatedAccess,
+    },
+  });
+});
+
+export const verifyAppleProfessionalPlanPurchase = catchAsync(async (req, res) => {
+  const userId = req.user?._id;
+  if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+
+  const payload = appleVerificationPayload(req.body);
+  if (payload.productId !== APPLE_PROFESSIONAL_PRODUCT_ID) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Apple product does not match Professional Plan");
+  }
+
+  const user = await User.findById(userId);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+
+  let examId = req.body?.examId?.toString().trim() || "";
+  let exam = examId ? await Exam.findById(examId).lean() : null;
+  if (!exam) {
+    exam = await Exam.findOne({ status: "active" }).sort({ createdAt: 1 }).lean();
+    examId = exam?._id?.toString() || "";
+  }
+  if (!exam || !examId) {
+    throw new AppError(httpStatus.NOT_FOUND, "No active exam found for plan unlock");
+  }
+
+  const verification = await verifyAppleReceipt(payload.receiptData);
+  const transaction = findAppleTransaction({
+    verification,
+    productId: APPLE_PROFESSIONAL_PRODUCT_ID,
+    transactionId: payload.transactionId,
+  });
+  assertAppleTransactionActive(transaction);
+
+  const appleTransactionId =
+    transaction.transaction_id?.toString().trim() || payload.transactionId;
+  const appleOriginalTransactionId =
+    transaction.original_transaction_id?.toString().trim() || appleTransactionId;
+  const duplicate = await ProfessionalPlanPurchase.findOne({
+    appleTransactionId,
+    userId: { $ne: userId },
+  }).lean();
+  if (duplicate) {
+    throw new AppError(httpStatus.CONFLICT, "Apple transaction already belongs to another account");
+  }
+
+  const pricing = await getPricing();
+  const { subscriptionStartedAt, subscriptionExpiresAt, intervalLabel } =
+    await buildProfessionalSubscriptionWindow();
+
+  const planPurchase = await ProfessionalPlanPurchase.findOneAndUpdate(
+    { userId, appleTransactionId },
+    {
+      userId,
+      examId,
+      provider: "apple",
+      status: "completed",
+      currency: pricing.currency || DEFAULT_CURRENCY,
+      planBasePrice: pricing.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
+      referralDiscountRate: 0,
+      referralDiscountAmount: 0,
+      planFinalPrice: pricing.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
+      totalAmount: pricing.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
+      appleProductId: APPLE_PROFESSIONAL_PRODUCT_ID,
+      appleTransactionId,
+      appleOriginalTransactionId,
+      paymentAccountFingerprint: appleOriginalTransactionId
+        ? `apple:${appleOriginalTransactionId}`
+        : "",
+      purchasedAt: transaction.purchase_date_ms
+        ? new Date(Number(transaction.purchase_date_ms))
+        : new Date(),
+      metadata: {
+        provider: "apple",
+        appleEnvironment: verification.environment || "",
+        appleReceiptStatus: verification.status,
+        purchaseStatus: payload.purchaseStatus,
+        verificationSource: payload.source,
+        expiresDateMs: transaction.expires_date_ms || "",
+      },
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+
+  const updatedAccess = await upsertExamAccessSafely(
+    { userId, examId },
+    {
+      userId,
+      examId,
+      status: "unlocked",
+      paymentStatus: "completed",
+      purchaseType: "plan",
+      currency: pricing.currency || DEFAULT_CURRENCY,
+      purchasePrice: planPurchase.planFinalPrice,
+      totalAmount: planPurchase.totalAmount,
+      maxQuestionsPerSession: 30,
+      appleProductId: APPLE_PROFESSIONAL_PRODUCT_ID,
+      appleTransactionId,
+      appleOriginalTransactionId,
+      paymentAccountFingerprint: planPurchase.paymentAccountFingerprint,
+      purchasedAt: planPurchase.purchasedAt,
+      metadata: {
+        provider: "apple",
+        planPurchaseId: planPurchase._id,
+      },
+    }
+  );
+
+  await User.findByIdAndUpdate(userId, {
+    subscriptionTier: "professional",
+    subscriptionStartedAt,
+    subscriptionExpiresAt,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Apple Professional Plan purchase verified",
+    data: {
+      unlocked: true,
+      purchaseType: "plan",
+      title: "Professional Plan",
+      amountPaid: planPurchase.totalAmount,
+      currency: planPurchase.currency || DEFAULT_CURRENCY,
+      billingCycleLabel: intervalLabel,
+      nextBillingDate: subscriptionExpiresAt,
+      paymentMethodLabel: "Apple In-App Purchase",
+      receiptNumber: appleTransactionId,
+      transactionReference: appleTransactionId,
+      paidAt: planPurchase.purchasedAt,
+      provider: "apple",
+      access: updatedAccess,
+      planPurchaseId: planPurchase._id,
+      subscriptionTier: "professional",
+      subscriptionStartedAt,
+      subscriptionExpiresAt,
+    },
+  });
+});
 
 export const createExamPayPalOrder = catchAsync(async (req, res) => {
   const userId = req.user?._id;

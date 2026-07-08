@@ -59,6 +59,24 @@ const examAccessSchema = new Schema(
     purchasePrice: { type: Number, default: 0 },
     paypalOrderId: { type: String, default: "" },
     stripePaymentIntentId: { type: String, default: "" },
+    appleProductId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    appleTransactionId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    appleOriginalTransactionId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     paymentAccountFingerprint: {
       type: String,
       trim: true,
