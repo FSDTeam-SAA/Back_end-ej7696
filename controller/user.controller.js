@@ -933,9 +933,15 @@ export const updateUserSubscription = catchAsync(async (req, res) => {
     const subscriptionExpiresAt = addInterval(subscriptionStartedAt, count, unit);
     user.subscriptionStartedAt = subscriptionStartedAt;
     user.subscriptionExpiresAt = subscriptionExpiresAt;
+    user.subscriptionProvider = "manual";
+    user.subscriptionExternalId = "";
+    user.subscriptionWillRenew = false;
   } else {
     user.subscriptionStartedAt = null;
     user.subscriptionExpiresAt = null;
+    user.subscriptionProvider = "";
+    user.subscriptionExternalId = "";
+    user.subscriptionWillRenew = null;
   }
   await user.save();
 

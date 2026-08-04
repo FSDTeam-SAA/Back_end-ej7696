@@ -77,6 +77,24 @@ const examAccessSchema = new Schema(
       default: "",
       index: true,
     },
+    revenueCatProductId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    revenueCatTransactionId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    revenueCatOriginalTransactionId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     paymentAccountFingerprint: {
       type: String,
       trim: true,

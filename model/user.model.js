@@ -183,6 +183,21 @@ const userSchema = new Schema(
       type: Date,
       default: null,
     },
+    subscriptionProvider: {
+      type: String,
+      enum: ["", "stripe", "paypal", "apple", "revenuecat", "manual"],
+      default: "",
+      index: true,
+    },
+    subscriptionExternalId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    subscriptionWillRenew: {
+      type: Boolean,
+      default: null,
+    },
     has_api510_inspection_guide: {
       type: Boolean,
       default: false,

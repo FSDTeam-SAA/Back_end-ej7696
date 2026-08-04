@@ -36,6 +36,9 @@ const normalizeExpiredProfessionalSubscription = async (user) => {
   user.subscriptionTier = "starter";
   user.subscriptionStartedAt = null;
   user.subscriptionExpiresAt = null;
+  user.subscriptionProvider = "";
+  user.subscriptionExternalId = "";
+  user.subscriptionWillRenew = null;
   await user.save();
   return user;
 };
