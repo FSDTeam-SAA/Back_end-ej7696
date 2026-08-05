@@ -30,6 +30,8 @@ The RevenueCat v2 secret key needs these permissions:
 - `customer_information:customers:read`
 - `customer_information:subscriptions:read_write` (required for Google Play refunds)
 - `customer_information:purchases:read`
+- `project_configuration:products:read` (required to translate RevenueCat v2
+  `prod...` resource IDs into App Store / Play Store product identifiers)
 
 The webhook token is independent of the RevenueCat API key. Generate a random
 token and keep it secret. The handler accepts the recommended `Bearer <token>`

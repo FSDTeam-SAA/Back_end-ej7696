@@ -208,7 +208,7 @@ export const syncMyRevenueCatAccess = catchAsync(async (req, res) => {
   const userId = req.user?._id?.toString();
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
 
-  const { user, state } = await syncRevenueCatCustomerAccess({
+  const { user, state, syncSummary } = await syncRevenueCatCustomerAccess({
     appUserId: userId,
     requestedExamId: clean(req.body?.examId),
     requestedProductId: clean(req.body?.productId),
@@ -224,6 +224,7 @@ export const syncMyRevenueCatAccess = catchAsync(async (req, res) => {
       subscriptionExpiresAt: user.subscriptionExpiresAt,
       subscriptionWillRenew: user.subscriptionWillRenew,
       hasProfessionalAccess: state.hasProfessionalAccess,
+      ...syncSummary,
     },
   });
 });

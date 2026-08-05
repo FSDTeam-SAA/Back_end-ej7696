@@ -6,9 +6,11 @@ import {
   isValidRevenueCatSignature,
 } from "../utils/revenuecat.webhook.js";
 import {
+  internalProductIdentifierFromObject,
   isRevenueCatRefundEvent,
   productIdentifierFromObject,
 } from "../utils/revenuecat.helpers.js";
+import { buildExamUnlockSummary } from "../utils/examAccess.helpers.js";
 
 test("RevenueCat webhook authorization accepts raw and Bearer token formats", () => {
   assert.equal(isValidRevenueCatAuthorization("secret", "secret"), true);
@@ -90,4 +92,33 @@ test("RevenueCat v2 product identifiers are parsed defensively", () => {
     }),
     "six_month_subscriptions"
   );
+  assert.equal(
+    productIdentifierFromObject({ product_id: "prod_internal_123" }),
+    ""
+  );
+  assert.equal(
+    internalProductIdentifierFromObject({ product_id: "prod_internal_123" }),
+    "prod_internal_123"
+  );
+});
+
+test("RevenueCat lifetime exam access never receives a fallback expiry", () => {
+  const purchasedAt = new Date("2025-01-01T00:00:00.000Z");
+  const result = buildExamUnlockSummary({
+    access: {
+      examId: "exam-570",
+      purchaseType: "exam",
+      paymentStatus: "completed",
+      accessDuration: "lifetime",
+      purchasedAt,
+    },
+    examMap: { "exam-570": "API 570" },
+    user: null,
+    now: new Date("2035-01-01T00:00:00.000Z").getTime(),
+  });
+
+  assert.equal(result.isLifetime, true);
+  assert.equal(result.expiresAt, null);
+  assert.equal(result.expiryMonths, null);
+  assert.equal(result.isExpired, false);
 });

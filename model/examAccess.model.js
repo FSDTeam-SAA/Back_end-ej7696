@@ -106,6 +106,12 @@ const examAccessSchema = new Schema(
       default: "pending",
     },
     purchasedAt: { type: Date, default: null },
+    accessDuration: {
+      type: String,
+      enum: ["three_months", "subscription", "lifetime"],
+      default: "three_months",
+    },
+    expiresAt: { type: Date, default: null },
     metadata: {
       type: Schema.Types.Mixed,
       default: {},

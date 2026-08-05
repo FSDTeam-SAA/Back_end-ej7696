@@ -6,6 +6,7 @@ import { ExamAccess } from "../model/examAccess.model.js";
 import { ProfessionalPlanPurchase } from "../model/professionalPlanPurchase.model.js";
 import { User } from "../model/user.model.js";
 import {
+  internalProductIdentifierFromObject,
   isRevenueCatRefundEvent,
   productIdentifierFromObject,
 } from "./revenuecat.helpers.js";
@@ -15,6 +16,7 @@ export { isRevenueCatRefundEvent } from "./revenuecat.helpers.js";
 const REVENUECAT_API_ORIGIN = "https://api.revenuecat.com";
 const API_TIMEOUT_MS = 15000;
 const MAX_PAGES = 20;
+const productStoreIdentifierCache = new Map();
 
 const EXAM_PRODUCT_CODES = new Map([
   ["com.inspectorspath.exam.api1184.unlock", "API_1184"],
@@ -163,6 +165,67 @@ const fetchRevenueCatList = async (initialPath) => {
   return items;
 };
 
+const fetchRevenueCatStoreIdentifier = async (internalProductId) => {
+  const productId = clean(internalProductId);
+  if (!productId) return "";
+
+  if (!productStoreIdentifierCache.has(productId)) {
+    const request = revenueCatRequest(
+      revenueCatProjectPath(`/products/${encodeURIComponent(productId)}`)
+    )
+      .then((payload) =>
+        clean(
+          payload?.store_identifier ||
+            payload?.store_product_identifier ||
+            payload?.product?.store_identifier
+        )
+      )
+      .then((storeIdentifier) => {
+        if (!storeIdentifier) {
+          throw new AppError(
+            httpStatus.BAD_GATEWAY,
+            `RevenueCat product ${productId} has no store identifier`
+          );
+        }
+        return storeIdentifier;
+      })
+      .catch((error) => {
+        productStoreIdentifierCache.delete(productId);
+        throw error;
+      });
+    productStoreIdentifierCache.set(productId, request);
+  }
+
+  return productStoreIdentifierCache.get(productId);
+};
+
+const resolveRevenueCatProducts = async (...groups) => {
+  const internalProductIds = unique(
+    groups
+      .flat()
+      .filter((item) => !productIdentifierFromObject(item))
+      .map(internalProductIdentifierFromObject)
+  );
+  const resolvedEntries = await Promise.all(
+    internalProductIds.map(async (productId) => [
+      productId,
+      await fetchRevenueCatStoreIdentifier(productId),
+    ])
+  );
+  const resolvedByInternalId = new Map(resolvedEntries);
+
+  return groups.map((items) =>
+    items.map((item) => {
+      if (productIdentifierFromObject(item)) return item;
+      const internalProductId = internalProductIdentifierFromObject(item);
+      const storeIdentifier = resolvedByInternalId.get(internalProductId);
+      return storeIdentifier
+        ? { ...item, product_store_identifier: storeIdentifier }
+        : item;
+    })
+  );
+};
+
 const entitlementMatches = (item, config) => {
   const identifier = clean(item?.entitlement_id || item?.id || item?.lookup_key);
   return Boolean(
@@ -206,7 +269,7 @@ export const fetchRevenueCatCustomerState = async (appUserId) => {
   }
 
   const encodedCustomerId = encodeURIComponent(customerId);
-  const [activeEntitlements, subscriptions, purchases] = await Promise.all([
+  const [activeEntitlements, rawSubscriptions, rawPurchases] = await Promise.all([
     fetchRevenueCatList(
       revenueCatProjectPath(
         `/customers/${encodedCustomerId}/active_entitlements?limit=100`
@@ -219,6 +282,13 @@ export const fetchRevenueCatCustomerState = async (appUserId) => {
       revenueCatProjectPath(`/customers/${encodedCustomerId}/purchases?limit=100`)
     ),
   ]);
+
+  // API v2 uses internal `product_id` references. Resolve them through the
+  // project product endpoint before applying subscription or exam rules.
+  const [subscriptions, purchases] = await resolveRevenueCatProducts(
+    rawSubscriptions,
+    rawPurchases
+  );
 
   const config = getRevenueCatConfig();
   const professionalSubscriptions = subscriptions.filter(
@@ -286,6 +356,8 @@ const unlockExamFromRevenueCat = async ({
   purchasedAt = new Date(),
   currency = "USD",
   price = 0,
+  accessDuration = purchaseType === "plan" ? "subscription" : "lifetime",
+  expiresAt = null,
 }) =>
   ExamAccess.findOneAndUpdate(
     { userId, examId: exam._id },
@@ -301,6 +373,8 @@ const unlockExamFromRevenueCat = async ({
         maxQuestionsPerSession: 30,
         paymentStatus: "completed",
         purchasedAt,
+        accessDuration,
+        expiresAt: accessDuration === "lifetime" ? null : expiresAt,
         revenueCatProductId: clean(productId),
         revenueCatTransactionId: clean(transactionId),
         revenueCatOriginalTransactionId: clean(originalTransactionId),
@@ -344,6 +418,9 @@ export const syncRevenueCatCustomerAccess = async ({
 
   const state = await fetchRevenueCatCustomerState(customerId);
   const now = new Date();
+  const syncedExamIds = new Set();
+  const unresolvedProductIds = new Set();
+  const unmappedProductIdentifiers = new Set();
 
   if (state.hasProfessionalAccess) {
     const subscription = state.currentProfessionalSubscription;
@@ -378,6 +455,8 @@ export const syncRevenueCatCustomerAccess = async ({
         exam,
         productId: requestedProductId || getRevenueCatConfig().iosProductId,
         purchaseType: "plan",
+        accessDuration: "subscription",
+        expiresAt,
       });
     }
   } else if (user.subscriptionProvider === "revenuecat") {
@@ -394,15 +473,29 @@ export const syncRevenueCatCustomerAccess = async ({
   const usablePurchases = state.purchases.filter(purchaseIsUsable);
   for (const purchase of usablePurchases) {
     const productId = productIdentifierFromObject(purchase);
+    if (!productId) {
+      const internalProductId = internalProductIdentifierFromObject(purchase);
+      if (internalProductId) unresolvedProductIds.add(internalProductId);
+      continue;
+    }
+    if (!EXAM_PRODUCT_CODES.has(productId)) {
+      unmappedProductIdentifiers.add(productId);
+      continue;
+    }
     const exam = await findExamForProduct(productId);
-    if (!exam) continue;
+    if (!exam) {
+      unmappedProductIdentifiers.add(productId);
+      continue;
+    }
     await unlockExamFromRevenueCat({
       userId: user._id,
       exam,
       productId,
       transactionId: clean(purchase?.store_purchase_identifier || purchase?.id),
       purchasedAt: dateFromMillis(purchase?.purchased_at) || now,
+      accessDuration: "lifetime",
     });
+    syncedExamIds.add(exam._id.toString());
   }
 
   if (requestedProductId && EXAM_PRODUCT_CODES.has(clean(requestedProductId))) {
@@ -417,7 +510,18 @@ export const syncRevenueCatCustomerAccess = async ({
     }
   }
 
-  return { user, state };
+  return {
+    user,
+    state,
+    syncSummary: {
+      ownedPurchaseCount: usablePurchases.length,
+      syncedExamCount: syncedExamIds.size,
+      unresolvedProductIds: [...unresolvedProductIds],
+      unmappedProductIdentifiers: [...unmappedProductIdentifiers],
+      subscriptionCount: state.subscriptions.length,
+      hasProfessionalAccess: state.hasProfessionalAccess,
+    },
+  };
 };
 
 export const revenueCatUserCandidates = (event = {}) =>

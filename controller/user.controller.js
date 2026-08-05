@@ -19,6 +19,7 @@ import {
   getUnlockedResourceCodeSet,
   normalizeProductCode,
 } from "../utils/resource.service.js";
+import { buildExamUnlockSummary } from "../utils/examAccess.helpers.js";
 
 const safeUserSelect =
   "-password -refreshToken -verificationInfo -password_reset_token";
@@ -110,12 +111,6 @@ const parseIfJson = (value, fieldName) => {
   }
 };
 
-const addMonths = (date, months) => {
-  const result = new Date(date);
-  result.setMonth(result.getMonth() + months);
-  return result;
-};
-
 const normalizePlanIntervalUnit = (unit) => {
   const value = unit?.toString().trim().toLowerCase();
   if (!value) return "months";
@@ -171,32 +166,6 @@ const buildInstallationSessionData = (user) => ({
   activeInstallationId: user.activeInstallationId || "",
   hasActiveInstallation: Boolean(user.activeDeviceId || user.activeInstallationId),
 });
-
-const buildExamUnlockSummary = ({ access, examMap, user }) => {
-  const unlockDate = access?.purchasedAt || null;
-  const fallbackExpiresAt = unlockDate
-    ? addMonths(unlockDate, PROFESSIONAL_SUBSCRIPTION_MONTHS)
-    : null;
-  const expiresAt =
-    access?.purchaseType === "plan"
-      ? user?.subscriptionExpiresAt || fallbackExpiresAt
-      : fallbackExpiresAt;
-  const isExpired = expiresAt
-    ? new Date(expiresAt).getTime() <= Date.now()
-    : false;
-
-  return {
-    examId: access.examId,
-    examName: examMap[access.examId?.toString()] || null,
-    purchaseType: access.purchaseType || null,
-    paymentStatus: access.paymentStatus || null,
-    unlockDate,
-    purchasedAt: unlockDate,
-    expiresAt,
-    expiryMonths: PROFESSIONAL_SUBSCRIPTION_MONTHS,
-    isExpired,
-  };
-};
 
 const RESOURCE_SOURCE_LABELS = {
   manual: "Manual unlock",
