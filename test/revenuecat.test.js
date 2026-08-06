@@ -115,11 +115,18 @@ test("RevenueCat lifetime exam access never receives a fallback expiry", () => {
       purchasedAt,
     },
     examMap: { "exam-570": "API 570" },
+    examImageMap: {
+      "exam-570": "https://cdn.example.com/exams/api-570.png",
+    },
     user: null,
     now: new Date("2035-01-01T00:00:00.000Z").getTime(),
   });
 
   assert.equal(result.isLifetime, true);
+  assert.equal(
+    result.examImageUrl,
+    "https://cdn.example.com/exams/api-570.png"
+  );
   assert.equal(result.expiresAt, null);
   assert.equal(result.expiryMonths, null);
   assert.equal(result.isExpired, false);

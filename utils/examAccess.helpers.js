@@ -7,6 +7,7 @@ const addMonths = (date, months) => {
 export const buildExamUnlockSummary = ({
   access,
   examMap,
+  examImageMap = {},
   user,
   expiryMonths = 3,
   now = Date.now(),
@@ -29,6 +30,7 @@ export const buildExamUnlockSummary = ({
   return {
     examId: access.examId,
     examName: examMap[access.examId?.toString()] || null,
+    examImageUrl: examImageMap[access.examId?.toString()] || null,
     purchaseType: access.purchaseType || null,
     paymentStatus: access.paymentStatus || null,
     unlockDate,

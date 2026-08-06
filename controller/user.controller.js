@@ -339,10 +339,14 @@ export const getMyUnlocks = catchAsync(async (req, res) => {
     ...new Set(accesses.map((access) => access.examId?.toString()).filter(Boolean)),
   ];
   const exams = examIds.length
-    ? await Exam.find({ _id: { $in: examIds } }).select("name").lean()
+    ? await Exam.find({ _id: { $in: examIds } }).select("name image.url").lean()
     : [];
   const examMap = exams.reduce((acc, exam) => {
     acc[exam._id.toString()] = exam.name;
+    return acc;
+  }, {});
+  const examImageMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.image?.url || null;
     return acc;
   }, {});
 
@@ -350,6 +354,7 @@ export const getMyUnlocks = catchAsync(async (req, res) => {
     buildExamUnlockSummary({
       access,
       examMap,
+      examImageMap,
       user,
     })
   );
