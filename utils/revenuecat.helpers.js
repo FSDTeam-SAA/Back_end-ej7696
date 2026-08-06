@@ -31,3 +31,14 @@ export const isRevenueCatRefundEvent = (event = {}) => {
       reason === "CUSTOMER_SUPPORT")
   );
 };
+
+export const normalizeRevenueCatActionStatus = (value) =>
+  clean(value).toLowerCase().replace(/[^a-z]/g, "");
+
+export const revenueCatActionSucceeded = (value) =>
+  normalizeRevenueCatActionStatus(value) === "success";
+
+export const revenueCatSubscriptionWasCancelled = (subscription = {}) =>
+  ["will_not_renew", "cancelled", "canceled"].includes(
+    clean(subscription.auto_renewal_status).toLowerCase()
+  );

@@ -4,6 +4,7 @@
 
 - Webhook: `POST https://api.inspectorspath.com/api/v1/payments/revenuecat/webhook`
 - Authenticated client sync: `POST https://api.inspectorspath.com/api/v1/payments/revenuecat/sync`
+- Authenticated refund callback: `POST https://api.inspectorspath.com/api/v1/payments/revenuecat/refund-request`
 
 The client sync endpoint uses the signed-in backend user's MongoDB ID as the
 RevenueCat App User ID. It does not accept a user ID from the request body.
@@ -45,8 +46,11 @@ the original raw JSON bytes and rejects signatures older than five minutes.
 
 - Initial purchases, renewals, uncancellations, extensions, transfers, and
   temporary grants synchronize current RevenueCat access.
-- A normal cancellation disables auto-renewal but retains access until the
-  entitlement expires.
+- A subscription cancellation immediately changes the backend plan to Starter,
+  even when RevenueCat still reports paid entitlement time.
+- A successful Customer Center subscription-refund submission also changes the
+  backend plan to Starter immediately. Failed or abandoned submissions do not
+  change the plan, and one-time exam purchases are not changed by this callback.
 - Expiration or a confirmed store refund removes RevenueCat-backed access.
 - Webhook event IDs are stored uniquely, so retries cannot apply the same event
   twice.

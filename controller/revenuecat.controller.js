@@ -8,6 +8,7 @@ import { User } from "../model/user.model.js";
 import {
   findRevenueCatUser,
   processRevenueCatEvent,
+  recordRevenueCatRefundRequest,
   syncRevenueCatCustomerAccess,
 } from "../utils/revenuecat.service.js";
 import {
@@ -225,6 +226,31 @@ export const syncMyRevenueCatAccess = catchAsync(async (req, res) => {
       subscriptionWillRenew: user.subscriptionWillRenew,
       hasProfessionalAccess: state.hasProfessionalAccess,
       ...syncSummary,
+    },
+  });
+});
+
+export const recordMyRevenueCatRefundRequest = catchAsync(async (req, res) => {
+  const userId = req.user?._id?.toString();
+  if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
+
+  const result = await recordRevenueCatRefundRequest({
+    appUserId: userId,
+    productId: clean(req.body?.productId),
+    status: clean(req.body?.status),
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: result.accepted
+      ? "Subscription changed to Starter"
+      : "No subscription change was required",
+    data: {
+      accepted: result.accepted,
+      kind: result.kind,
+      subscriptionTier: result.user.subscriptionTier,
+      subscriptionWillRenew: result.user.subscriptionWillRenew,
     },
   });
 });

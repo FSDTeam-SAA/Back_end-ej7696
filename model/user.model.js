@@ -198,6 +198,12 @@ const userSchema = new Schema(
       type: Boolean,
       default: null,
     },
+    // Keeps an immediate cancellation/refund downgrade authoritative while
+    // RevenueCat may still report paid entitlement time for the same purchase.
+    subscriptionRevokedAt: {
+      type: Date,
+      default: null,
+    },
     has_api510_inspection_guide: {
       type: Boolean,
       default: false,

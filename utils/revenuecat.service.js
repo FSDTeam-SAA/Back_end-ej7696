@@ -9,6 +9,8 @@ import {
   internalProductIdentifierFromObject,
   isRevenueCatRefundEvent,
   productIdentifierFromObject,
+  revenueCatActionSucceeded,
+  revenueCatSubscriptionWasCancelled,
 } from "./revenuecat.helpers.js";
 
 export { isRevenueCatRefundEvent } from "./revenuecat.helpers.js";
@@ -236,7 +238,10 @@ const entitlementMatches = (item, config) => {
   );
 };
 
-const isProfessionalProduct = (productId, config = getRevenueCatConfig()) =>
+export const isProfessionalProduct = (
+  productId,
+  config = getRevenueCatConfig()
+) =>
   [config.iosProductId, config.androidProductId]
     .filter(Boolean)
     .includes(clean(productId));
@@ -401,10 +406,31 @@ const revokeRevenueCatPlanAccess = async (userId, paymentStatus = "voided") => {
   );
 };
 
+const revocationMatchesCurrentSubscription = (user, subscription) => {
+  if (!user?.subscriptionRevokedAt) return false;
+  const storedId = clean(user.subscriptionExternalId);
+  const currentId = clean(subscription?.id);
+  return !storedId || !currentId || storedId === currentId;
+};
+
+const downgradeRevenueCatSubscription = async ({ user, subscription } = {}) => {
+  if (!user) return null;
+  user.subscriptionTier = "starter";
+  user.subscriptionProvider = "revenuecat";
+  user.subscriptionExternalId =
+    clean(subscription?.id) || clean(user.subscriptionExternalId);
+  user.subscriptionWillRenew = false;
+  user.subscriptionRevokedAt = user.subscriptionRevokedAt || new Date();
+  await user.save();
+  await revokeRevenueCatPlanAccess(user._id);
+  return user;
+};
+
 export const syncRevenueCatCustomerAccess = async ({
   appUserId,
   requestedExamId = "",
   requestedProductId = "",
+  forceProfessionalActivation = false,
 } = {}) => {
   const customerId = clean(appUserId);
   if (!mongoose.Types.ObjectId.isValid(customerId)) {
@@ -433,16 +459,30 @@ export const syncRevenueCatCustomerAccess = async ({
       (user.subscriptionExpiresAt && user.subscriptionExpiresAt > now
         ? user.subscriptionExpiresAt
         : new Date("9999-12-31T23:59:59.999Z"));
-    user.subscriptionTier = "professional";
+    const requestedProfessionalPurchase =
+      isProfessionalProduct(requestedProductId);
+    const cancellationStillApplies =
+      !forceProfessionalActivation &&
+      !requestedProfessionalPurchase &&
+      (revenueCatSubscriptionWasCancelled(subscription) ||
+        revocationMatchesCurrentSubscription(user, subscription));
+
     user.subscriptionStartedAt = startsAt;
     user.subscriptionExpiresAt = expiresAt;
     user.subscriptionProvider = "revenuecat";
     user.subscriptionExternalId = clean(subscription?.id);
-    user.subscriptionWillRenew =
-      clean(subscription?.auto_renewal_status).toLowerCase() === "will_renew";
-    await user.save();
 
-    if (requestedExamId) {
+    if (cancellationStillApplies) {
+      await downgradeRevenueCatSubscription({ user, subscription });
+    } else {
+      user.subscriptionTier = "professional";
+      user.subscriptionWillRenew =
+        clean(subscription?.auto_renewal_status).toLowerCase() === "will_renew";
+      user.subscriptionRevokedAt = null;
+      await user.save();
+    }
+
+    if (requestedExamId && user.subscriptionTier === "professional") {
       if (!mongoose.Types.ObjectId.isValid(requestedExamId)) {
         throw new AppError(httpStatus.BAD_REQUEST, "Invalid examId");
       }
@@ -466,6 +506,7 @@ export const syncRevenueCatCustomerAccess = async ({
     user.subscriptionProvider = "";
     user.subscriptionExternalId = "";
     user.subscriptionWillRenew = null;
+    user.subscriptionRevokedAt = null;
     await user.save();
     await revokeRevenueCatPlanAccess(user._id);
   }
@@ -675,8 +716,16 @@ export const processRevenueCatEvent = async ({ event, user }) => {
     return { ignored: true, reason: "No backend user matches the App User ID" };
   }
 
+  const professionalEvent = isProfessionalRevenueCatEvent(event);
+  const activationEvent = [
+    "INITIAL_PURCHASE",
+    "RENEWAL",
+    "UNCANCELLATION",
+    "REFUND_REVERSED",
+  ].includes(eventType);
   const stateResult = await syncRevenueCatCustomerAccess({
     appUserId: user._id.toString(),
+    forceProfessionalActivation: professionalEvent && activationEvent,
   });
   const [purchase, examAccess] = await Promise.all([
     upsertProfessionalPurchaseFromEvent({ user, event }),
@@ -684,11 +733,13 @@ export const processRevenueCatEvent = async ({ event, user }) => {
   ]);
 
   if (
-    isRevenueCatRefundEvent(event) &&
-    isProfessionalRevenueCatEvent(event) &&
-    !stateResult.state.hasProfessionalAccess
+    professionalEvent &&
+    (eventType === "CANCELLATION" || isRevenueCatRefundEvent(event))
   ) {
-    await revokeRevenueCatPlanAccess(user._id, "refunded");
+    await downgradeRevenueCatSubscription({
+      user: stateResult.user,
+      subscription: stateResult.state.currentProfessionalSubscription,
+    });
   }
 
   return {
@@ -698,6 +749,48 @@ export const processRevenueCatEvent = async ({ event, user }) => {
     purchase,
     examAccess,
   };
+};
+
+export const recordRevenueCatRefundRequest = async ({
+  appUserId,
+  productId,
+  status,
+} = {}) => {
+  const customerId = clean(appUserId);
+  const requestedProductId = clean(productId);
+  if (!mongoose.Types.ObjectId.isValid(customerId)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid authenticated user ID");
+  }
+  if (!requestedProductId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "productId is required");
+  }
+
+  const user = await User.findById(customerId);
+  if (!user) throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  if (!revenueCatActionSucceeded(status)) {
+    return { accepted: false, kind: "none", user };
+  }
+  if (!isProfessionalProduct(requestedProductId)) {
+    return { accepted: false, kind: "non_subscription", user };
+  }
+
+  const state = await fetchRevenueCatCustomerState(customerId);
+  const ownsSubscription = state.subscriptions.some(
+    (subscription) =>
+      productIdentifierFromObject(subscription) === requestedProductId
+  );
+  if (!ownsSubscription && !state.hasProfessionalAccess) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "RevenueCat does not associate this subscription with the signed-in user"
+    );
+  }
+
+  await downgradeRevenueCatSubscription({
+    user,
+    subscription: state.currentProfessionalSubscription,
+  });
+  return { accepted: true, kind: "subscription", user, state };
 };
 
 export const refundRevenueCatTransaction = async (purchase) => {

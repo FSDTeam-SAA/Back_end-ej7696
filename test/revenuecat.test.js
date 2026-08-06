@@ -9,6 +9,8 @@ import {
   internalProductIdentifierFromObject,
   isRevenueCatRefundEvent,
   productIdentifierFromObject,
+  revenueCatActionSucceeded,
+  revenueCatSubscriptionWasCancelled,
 } from "../utils/revenuecat.helpers.js";
 import { buildExamUnlockSummary } from "../utils/examAccess.helpers.js";
 
@@ -121,4 +123,24 @@ test("RevenueCat lifetime exam access never receives a fallback expiry", () => {
   assert.equal(result.expiresAt, null);
   assert.equal(result.expiryMonths, null);
   assert.equal(result.isExpired, false);
+});
+
+test("only a successful Customer Center refund submission changes access", () => {
+  assert.equal(revenueCatActionSucceeded("success"), true);
+  assert.equal(revenueCatActionSucceeded(" SUCCESS "), true);
+  assert.equal(revenueCatActionSucceeded("userCancelled"), false);
+  assert.equal(revenueCatActionSucceeded("error"), false);
+});
+
+test("RevenueCat will_not_renew is treated as an immediate cancellation", () => {
+  assert.equal(
+    revenueCatSubscriptionWasCancelled({
+      auto_renewal_status: "will_not_renew",
+    }),
+    true
+  );
+  assert.equal(
+    revenueCatSubscriptionWasCancelled({ auto_renewal_status: "will_renew" }),
+    false
+  );
 });

@@ -32,6 +32,7 @@ import {
 } from "../middleware/auth.middleware.js";
 import {
   handleRevenueCatWebhook,
+  recordMyRevenueCatRefundRequest,
   syncMyRevenueCatAccess,
 } from "../controller/revenuecat.controller.js";
 
@@ -39,6 +40,11 @@ const router = express.Router();
 
 router.post("/revenuecat/webhook", handleRevenueCatWebhook);
 router.post("/revenuecat/sync", protect, syncMyRevenueCatAccess);
+router.post(
+  "/revenuecat/refund-request",
+  protect,
+  recordMyRevenueCatRefundRequest
+);
 
 router.post("/exam/:examId/paypal/create", protect, createExamPayPalOrder);
 router.post("/exam/:examId/paypal/capture", protect, captureExamPayPalOrder);
