@@ -11,6 +11,8 @@ import {
   isRevenueCatRefundEvent,
   productIdentifierFromObject,
   revenueCatActionSucceeded,
+  revenueCatPurchaseIsUsable,
+  revenueCatPurchasesIncludeProduct,
   revenueCatSubscriptionWasCancelled,
 } from "./revenuecat.helpers.js";
 
@@ -343,15 +345,6 @@ const findExamForProduct = async (productId) => {
   return Exam.findOne({ name: examNamePattern(examCode), status: "active" });
 };
 
-const purchaseIsUsable = (purchase) => {
-  if (purchase?.refunded_at || purchase?.revoked_at) return false;
-  const entitlementItems = purchase?.entitlements?.items;
-  if (!Array.isArray(entitlementItems) || entitlementItems.length === 0) return true;
-  return entitlementItems.some((item) =>
-    ["active", "granted"].includes(clean(item?.state).toLowerCase())
-  );
-};
-
 const unlockExamFromRevenueCat = async ({
   userId,
   exam,
@@ -448,7 +441,43 @@ export const syncRevenueCatCustomerAccess = async ({
   const syncedExamIds = new Set();
   const unresolvedProductIds = new Set();
   const unmappedProductIdentifiers = new Set();
+  const normalizedRequestedProductId = clean(requestedProductId);
+  const requestedExamProductId = EXAM_PRODUCT_CODES.has(
+    normalizedRequestedProductId
+  )
+    ? normalizedRequestedProductId
+    : "";
+  let requestedExam = null;
   let selectedExam = null;
+
+  if (requestedExamId) {
+    if (!mongoose.Types.ObjectId.isValid(requestedExamId)) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Invalid examId");
+    }
+    requestedExam = await Exam.findById(requestedExamId);
+    if (!requestedExam || requestedExam.status !== "active") {
+      throw new AppError(httpStatus.NOT_FOUND, "Active exam not found");
+    }
+  }
+
+  if (requestedExamProductId) {
+    if (!requestedExam) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "examId is required when synchronizing an exam purchase"
+      );
+    }
+    const productExam = await findExamForProduct(requestedExamProductId);
+    if (
+      !productExam ||
+      productExam._id.toString() !== requestedExam._id.toString()
+    ) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "RevenueCat product does not match the selected exam"
+      );
+    }
+  }
 
   if (state.hasProfessionalAccess) {
     const subscription = state.currentProfessionalSubscription;
@@ -483,42 +512,6 @@ export const syncRevenueCatCustomerAccess = async ({
       user.subscriptionRevokedAt = null;
       await user.save();
     }
-
-    if (requestedExamId && user.subscriptionTier === "professional") {
-      if (!mongoose.Types.ObjectId.isValid(requestedExamId)) {
-        throw new AppError(httpStatus.BAD_REQUEST, "Invalid examId");
-      }
-      const exam = await Exam.findById(requestedExamId);
-      if (!exam || exam.status !== "active") {
-        throw new AppError(httpStatus.NOT_FOUND, "Active exam not found");
-      }
-
-      // Do not replace an existing lifetime/manual unlock with subscription-only
-      // access. An active Professional subscription makes that owned exam usable.
-      const existingAccess = await ExamAccess.findOne({
-        userId: user._id,
-        examId: exam._id,
-      });
-      const hasDurableAccess =
-        existingAccess?.status === "unlocked" &&
-        existingAccess?.purchaseType !== "plan";
-      const access = hasDurableAccess
-        ? existingAccess
-        : await unlockExamFromRevenueCat({
-            userId: user._id,
-            exam,
-            productId:
-              requestedProductId ||
-              productIdentifierFromObject(subscription) ||
-              getRevenueCatConfig().iosProductId,
-            purchaseType: "plan",
-            accessDuration: "subscription",
-            expiresAt,
-          });
-
-      syncedExamIds.add(exam._id.toString());
-      selectedExam = buildSelectedExamUnlockResponse({ exam, access });
-    }
   } else if (user.subscriptionProvider === "revenuecat") {
     user.subscriptionTier = "starter";
     user.subscriptionStartedAt = null;
@@ -531,14 +524,7 @@ export const syncRevenueCatCustomerAccess = async ({
     await revokeRevenueCatPlanAccess(user._id);
   }
 
-  if (requestedExamId && !selectedExam?.unlocked) {
-    throw new AppError(
-      httpStatus.PAYMENT_REQUIRED,
-      "RevenueCat has not confirmed an active Professional subscription for this exam unlock"
-    );
-  }
-
-  const usablePurchases = state.purchases.filter(purchaseIsUsable);
+  const usablePurchases = state.purchases.filter(revenueCatPurchaseIsUsable);
   for (const purchase of usablePurchases) {
     const productId = productIdentifierFromObject(purchase);
     if (!productId) {
@@ -555,7 +541,7 @@ export const syncRevenueCatCustomerAccess = async ({
       unmappedProductIdentifiers.add(productId);
       continue;
     }
-    await unlockExamFromRevenueCat({
+    const access = await unlockExamFromRevenueCat({
       userId: user._id,
       exam,
       productId,
@@ -564,13 +550,21 @@ export const syncRevenueCatCustomerAccess = async ({
       accessDuration: "lifetime",
     });
     syncedExamIds.add(exam._id.toString());
+    if (
+      requestedExam &&
+      productId === requestedExamProductId &&
+      exam._id.toString() === requestedExam._id.toString()
+    ) {
+      selectedExam = buildSelectedExamUnlockResponse({ exam, access });
+    }
   }
 
-  if (requestedProductId && EXAM_PRODUCT_CODES.has(clean(requestedProductId))) {
-    const ownsRequestedProduct = usablePurchases.some(
-      (purchase) => productIdentifierFromObject(purchase) === clean(requestedProductId)
+  if (requestedExamProductId) {
+    const ownsRequestedProduct = revenueCatPurchasesIncludeProduct(
+      state.purchases,
+      requestedExamProductId
     );
-    if (!ownsRequestedProduct) {
+    if (!ownsRequestedProduct || !selectedExam?.unlocked) {
       throw new AppError(
         httpStatus.PAYMENT_REQUIRED,
         "RevenueCat has not confirmed this exam purchase"
@@ -584,6 +578,7 @@ export const syncRevenueCatCustomerAccess = async ({
     syncSummary: {
       ownedPurchaseCount: usablePurchases.length,
       syncedExamCount: syncedExamIds.size,
+      syncedExamIds: [...syncedExamIds],
       unresolvedProductIds: [...unresolvedProductIds],
       unmappedProductIdentifiers: [...unmappedProductIdentifiers],
       subscriptionCount: state.subscriptions.length,

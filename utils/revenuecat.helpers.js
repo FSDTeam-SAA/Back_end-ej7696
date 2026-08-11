@@ -22,6 +22,27 @@ export const productIdentifierFromObject = (value) =>
 export const internalProductIdentifierFromObject = (value) =>
   clean(value?.product_id || value?.product?.id);
 
+export const revenueCatPurchaseIsUsable = (purchase) => {
+  if (purchase?.refunded_at || purchase?.revoked_at) return false;
+  const entitlementItems = purchase?.entitlements?.items;
+  if (!Array.isArray(entitlementItems) || entitlementItems.length === 0) {
+    return true;
+  }
+  return entitlementItems.some((item) =>
+    ["active", "granted"].includes(clean(item?.state).toLowerCase())
+  );
+};
+
+export const revenueCatPurchasesIncludeProduct = (purchases, productId) => {
+  const requestedProductId = clean(productId);
+  if (!requestedProductId || !Array.isArray(purchases)) return false;
+  return purchases.some(
+    (purchase) =>
+      revenueCatPurchaseIsUsable(purchase) &&
+      productIdentifierFromObject(purchase) === requestedProductId
+  );
+};
+
 export const isRevenueCatRefundEvent = (event = {}) => {
   const eventType = clean(event.type).toUpperCase();
   const reason = clean(event.cancel_reason || event.expiration_reason).toUpperCase();

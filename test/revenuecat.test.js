@@ -10,6 +10,8 @@ import {
   isRevenueCatRefundEvent,
   productIdentifierFromObject,
   revenueCatActionSucceeded,
+  revenueCatPurchaseIsUsable,
+  revenueCatPurchasesIncludeProduct,
   revenueCatSubscriptionWasCancelled,
 } from "../utils/revenuecat.helpers.js";
 import {
@@ -232,4 +234,33 @@ test("RevenueCat will_not_renew is treated as an immediate cancellation", () => 
     revenueCatSubscriptionWasCancelled({ auto_renewal_status: "will_renew" }),
     false
   );
+});
+
+test("exam product confirmation rejects missing, refunded, and revoked purchases", () => {
+  const productId = "com.inspectorspath.exam.api1184.unlock";
+  const completedPurchase = {
+    product_store_identifier: productId,
+    entitlements: { items: [{ state: "active" }] },
+  };
+
+  assert.equal(revenueCatPurchaseIsUsable(completedPurchase), true);
+  assert.equal(
+    revenueCatPurchasesIncludeProduct([completedPurchase], productId),
+    true
+  );
+  assert.equal(
+    revenueCatPurchasesIncludeProduct(
+      [{ ...completedPurchase, refunded_at: Date.now() }],
+      productId
+    ),
+    false
+  );
+  assert.equal(
+    revenueCatPurchasesIncludeProduct(
+      [{ ...completedPurchase, revoked_at: Date.now() }],
+      productId
+    ),
+    false
+  );
+  assert.equal(revenueCatPurchasesIncludeProduct([], productId), false);
 });
