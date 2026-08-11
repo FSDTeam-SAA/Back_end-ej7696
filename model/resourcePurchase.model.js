@@ -140,6 +140,7 @@ const resourcePurchaseSchema = new Schema(
           adminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
           type: { type: String, enum: ["full", "partial"], required: true },
           stripeRefundId: { type: String, trim: true, default: "" },
+          paypalRefundId: { type: String, trim: true, default: "" },
         },
       ],
       default: [],

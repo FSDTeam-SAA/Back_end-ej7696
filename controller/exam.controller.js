@@ -13,6 +13,11 @@ import { AppSetting } from "../model/appSetting.model.js";
 import { ExamRating } from "../model/examRating.model.js";
 import { User } from "../model/user.model.js";
 import {
+  canAccessOwnedExam,
+  isActiveProfessionalSubscription,
+  isExamOwned,
+} from "../utils/examAccess.helpers.js";
+import {
   approveQuestionBankReviewBatches,
   QUESTION_BANK_DEFAULT_BATCH_SIZE,
   QUESTION_BANK_DEFAULT_TARGET,
@@ -119,16 +124,6 @@ const parseBoolean = (value) => {
   if (typeof value === "boolean") return value;
   const normalized = value.toString().toLowerCase();
   return ["true", "1", "yes", "y", "on"].includes(normalized);
-};
-
-const isActiveProfessionalSubscription = (user, referenceDate = new Date()) => {
-  if (!user) return false;
-  if (user.subscriptionTier?.toString().toLowerCase() !== "professional") {
-    return false;
-  }
-  if (!user.subscriptionExpiresAt) return false;
-  const expiresAt = new Date(user.subscriptionExpiresAt);
-  return expiresAt.getTime() > referenceDate.getTime();
 };
 
 const dateValuesEqual = (left, right) => {
@@ -389,6 +384,11 @@ export const getActiveExams = catchAsync(async (req, res) => {
 
   if (req.user?._id) {
     const userId = req.user._id.toString();
+    const now = new Date();
+    const hasActiveSubscription = isActiveProfessionalSubscription(
+      req.user,
+      now
+    );
     const examIds = data.exams.map((exam) => exam._id);
 
     const accesses = await ExamAccess.find({
@@ -404,13 +404,21 @@ export const getActiveExams = catchAsync(async (req, res) => {
 
     data.exams = data.exams.map((exam) => {
       const access = accessMap[exam._id.toString()];
-      const isUnlocked = access?.status === "unlocked";
+      const owned = isExamOwned(access);
+      const isUnlocked = canAccessOwnedExam({
+        user: req.user,
+        access,
+        referenceDate: now,
+      });
       return {
         ...exam,
         unlockPrice,
         currency,
         unlocked: Boolean(isUnlocked),
-        accessStatus: access?.status || "free",
+        owned,
+        requiresSubscription: owned && !hasActiveSubscription,
+        accessStatus: isUnlocked ? "unlocked" : "locked",
+        ownershipStatus: access?.status || "free",
         purchaseType: access?.purchaseType || null,
         paymentStatus: access?.paymentStatus || null,
       };
@@ -421,7 +429,10 @@ export const getActiveExams = catchAsync(async (req, res) => {
       unlockPrice,
       currency,
       unlocked: false,
-      accessStatus: "free",
+      owned: false,
+      requiresSubscription: false,
+      accessStatus: "locked",
+      ownershipStatus: "free",
       purchaseType: null,
       paymentStatus: null,
     }));
@@ -499,9 +510,9 @@ export const startExam = catchAsync(async (req, res) => {
   const now = new Date();
   const monthKey = getMonthKey(now);
   const accessDoc = await ExamAccess.findOne({ userId, examId });
-  const isUnlocked = accessDoc?.status === "unlocked";
-
   const isProfessionalUser = isActiveProfessionalSubscription(req.user, now);
+  const ownsExam = isExamOwned(accessDoc);
+  const isUnlocked = ownsExam && isProfessionalUser;
   const subscriptionStartedAt =
     isProfessionalUser && req.user?.subscriptionStartedAt
       ? new Date(req.user.subscriptionStartedAt)
@@ -511,13 +522,6 @@ export const startExam = catchAsync(async (req, res) => {
       ? new Date(req.user.subscriptionExpiresAt)
       : null;
   const isStarterUser = !isProfessionalUser;
-
-  if (isUnlocked && accessDoc?.purchaseType === "plan" && !isProfessionalUser) {
-    throw new AppError(
-      httpStatus.FORBIDDEN,
-      "Professional subscription expired. Please purchase again to continue."
-    );
-  }
 
   if (isStarterUser && !isUnlocked) {
     const hasSubmittedAttempt = await ExamAttempt.exists({
@@ -533,9 +537,7 @@ export const startExam = catchAsync(async (req, res) => {
     }
   }
 
-  const maxQuestionsPerSession = isUnlocked
-    ? 30
-    : accessDoc?.maxQuestionsPerSession || 2;
+  const maxQuestionsPerSession = isUnlocked ? 30 : 2;
   let effectiveQuestionCount = Math.min(nQuestion, maxQuestionsPerSession);
 
   const durationMinutes =

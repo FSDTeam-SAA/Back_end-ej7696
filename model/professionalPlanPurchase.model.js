@@ -11,12 +11,12 @@ const professionalPlanPurchaseSchema = new Schema(
     examId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Exam",
-      required: true,
+      default: null,
       index: true,
     },
     provider: {
       type: String,
-      enum: ["stripe", "paypal", "apple", "manual"],
+      enum: ["stripe", "paypal", "apple", "revenuecat", "manual"],
       required: true,
     },
     status: {
@@ -122,6 +122,53 @@ const professionalPlanPurchaseSchema = new Schema(
       default: "",
       index: true,
     },
+    revenueCatAppUserId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    revenueCatProductId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    revenueCatTransactionId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    revenueCatOriginalTransactionId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    revenueCatSubscriptionId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    revenueCatStore: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: "",
+    },
+    revenueCatEnvironment: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: "",
+    },
+    revenueCatEventId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     paymentAccountFingerprint: {
       type: String,
       trim: true,
@@ -155,6 +202,9 @@ const professionalPlanPurchaseSchema = new Schema(
           adminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
           type: { type: String, enum: ["full", "partial"], required: true },
           stripeRefundId: { type: String, trim: true, default: "" },
+          paypalRefundId: { type: String, trim: true, default: "" },
+          revenueCatRefundId: { type: String, trim: true, default: "" },
+          revenueCatEventId: { type: String, trim: true, default: "" },
         },
       ],
       default: [],
@@ -169,6 +219,15 @@ professionalPlanPurchaseSchema.index(
     unique: true,
     partialFilterExpression: {
       stripePaymentIntentId: { $exists: true, $type: "string", $ne: "" },
+    },
+  }
+);
+professionalPlanPurchaseSchema.index(
+  { revenueCatTransactionId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      revenueCatTransactionId: { $exists: true, $type: "string", $ne: "" },
     },
   }
 );

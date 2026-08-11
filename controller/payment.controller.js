@@ -16,7 +16,9 @@ import {
   applyResourceUnlocksToUser,
   getUpgradeCheckoutPrice,
   getUpgradeAddOnOptions,
+  getUnlockCodesForProduct,
   normalizeProductCode,
+  persistUserResourceUnlockCodes,
   resolveResourceRevenueTag,
   roundCurrency,
 } from "../utils/resource.service.js";
@@ -28,6 +30,7 @@ import {
   voidReferralRewardsForExamAccess,
   voidReferralRewardsForPlanPurchase,
 } from "../utils/referral.service.js";
+import { refundRevenueCatTransaction } from "../utils/revenuecat.service.js";
 
 const PAYPAL_BASE_URL =
   process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com";
@@ -1159,6 +1162,106 @@ const getPayPalAccessToken = async () => {
   return data.access_token;
 };
 
+const refundPayPalTransaction = async ({ transaction, amount, currency }) => {
+  if (!transaction.paypalOrderId) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "PayPal order ID is missing from this transaction"
+    );
+  }
+  const token = await getPayPalAccessToken();
+  const orderResponse = await fetch(
+    `${PAYPAL_BASE_URL}/v2/checkout/orders/${encodeURIComponent(
+      transaction.paypalOrderId
+    )}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const order = await orderResponse.json().catch(() => null);
+  if (!orderResponse.ok) {
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      order?.message || "Failed to retrieve the PayPal transaction"
+    );
+  }
+  const captureId =
+    order?.purchase_units?.[0]?.payments?.captures?.[0]?.id?.toString().trim() ||
+    "";
+  if (!captureId) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "PayPal capture ID is missing from this transaction"
+    );
+  }
+
+  const refundResponse = await fetch(
+    `${PAYPAL_BASE_URL}/v2/payments/captures/${encodeURIComponent(captureId)}/refund`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        amount: {
+          value: roundCurrency(amount).toFixed(2),
+          currency_code: currency?.toString().trim().toUpperCase() || "USD",
+        },
+      }),
+    }
+  );
+  const refund = await refundResponse.json().catch(() => null);
+  if (!refundResponse.ok || !refund?.id) {
+    throw new AppError(
+      httpStatus.BAD_GATEWAY,
+      refund?.message || "PayPal refund failed"
+    );
+  }
+  return refund;
+};
+
+const rebuildUserResourceAccess = async (userId) => {
+  const completedPurchases = await ResourcePurchase.find({
+    userId,
+    status: "completed",
+  }).populate("productId");
+  const unlockCodes = new Set();
+  for (const purchase of completedPurchases) {
+    for (const code of getUnlockCodesForProduct(purchase.productId)) {
+      unlockCodes.add(code);
+    }
+  }
+  await persistUserResourceUnlockCodes({ userId, unlockCodes });
+};
+
+const shouldRevokeCurrentSubscription = (user, provider) => {
+  const currentProvider = user?.subscriptionProvider
+    ?.toString()
+    .trim()
+    .toLowerCase();
+  // Legacy subscriptions predate provider tracking and retain the previous
+  // behavior. Once a provider is known, refunding an old transaction from a
+  // different provider must not revoke the user's current plan.
+  return !currentProvider || currentProvider === provider;
+};
+
+const planAccessRefundFilter = (transaction, provider) => {
+  const filter = {
+    userId: transaction.userId,
+    status: "unlocked",
+    purchaseType: "plan",
+  };
+  if (provider === "stripe" && transaction.stripePaymentIntentId) {
+    filter.stripePaymentIntentId = transaction.stripePaymentIntentId;
+  } else if (provider === "paypal" && transaction.paypalOrderId) {
+    filter.paypalOrderId = transaction.paypalOrderId;
+  } else if (provider === "revenuecat") {
+    filter["metadata.provider"] = "revenuecat";
+  } else if (transaction.examId) {
+    filter.examId = transaction.examId;
+  }
+  return filter;
+};
+
 export const createExamStripePaymentIntent = catchAsync(async (req, res) => {
   const userId = req.user?._id;
   const examId = req.params.examId;
@@ -1341,6 +1444,8 @@ export const confirmExamStripePayment = catchAsync(async (req, res) => {
       paymentStatus: "completed",
       stripePaymentIntentId: paymentIntentId,
       purchaseType: "exam",
+      accessDuration: "lifetime",
+      expiresAt: null,
       maxQuestionsPerSession: 30,
       paymentAccountFingerprint: paymentFingerprint,
       purchasedAt: new Date(),
@@ -1572,6 +1677,9 @@ export const confirmProfessionalPlanStripePayment = catchAsync(
       subscriptionTier: "professional",
       subscriptionStartedAt,
       subscriptionExpiresAt,
+      subscriptionProvider: "stripe",
+      subscriptionExternalId: paymentIntentId,
+      subscriptionWillRenew: false,
     });
 
     planPurchase.status = "completed";
@@ -1707,6 +1815,8 @@ export const verifyAppleExamPurchase = catchAsync(async (req, res) => {
       status: "unlocked",
       paymentStatus: "completed",
       purchaseType: "exam",
+      accessDuration: "lifetime",
+      expiresAt: null,
       currency: pricing.currency || DEFAULT_CURRENCY,
       basePrice: pricing.examUnlockPrice ?? DEFAULT_EXAM_PRICE,
       purchasePrice: pricing.examUnlockPrice ?? DEFAULT_EXAM_PRICE,
@@ -1859,6 +1969,9 @@ export const verifyAppleProfessionalPlanPurchase = catchAsync(async (req, res) =
     subscriptionTier: "professional",
     subscriptionStartedAt,
     subscriptionExpiresAt,
+    subscriptionProvider: "apple",
+    subscriptionExternalId: appleOriginalTransactionId,
+    subscriptionWillRenew: true,
   });
 
   sendResponse(res, {
@@ -2097,6 +2210,8 @@ export const captureExamPayPalOrder = catchAsync(async (req, res) => {
       paymentStatus: "completed",
       paypalOrderId: orderId,
       purchaseType: "exam",
+      accessDuration: "lifetime",
+      expiresAt: null,
       maxQuestionsPerSession: 30,
       paymentAccountFingerprint: paymentFingerprint,
       purchasedAt: new Date(),
@@ -2339,6 +2454,9 @@ export const captureProfessionalPlanOrder = catchAsync(async (req, res) => {
     subscriptionTier: "professional",
     subscriptionStartedAt,
     subscriptionExpiresAt,
+    subscriptionProvider: "paypal",
+    subscriptionExternalId: orderId,
+    subscriptionWillRenew: false,
   });
 
   planPurchase.status = "completed";
@@ -2505,7 +2623,13 @@ export const getUserTransactions = catchAsync(async (req, res) => {
 
 export const processRefund = catchAsync(async (req, res) => {
   const { transactionId } = req.params;
-  const { type, amount, reason, transactionType } = req.body;
+  const type = req.body?.type?.toString().trim().toLowerCase();
+  const amount = req.body?.amount;
+  const reason = req.body?.reason?.toString().trim();
+  const transactionType = req.body?.transactionType
+    ?.toString()
+    .trim()
+    .toLowerCase();
   const adminId = req.user?._id;
 
   if (!transactionId || !type || !reason || !transactionType) {
@@ -2537,6 +2661,20 @@ export const processRefund = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_REQUEST, "This transaction has no remaining refundable amount");
   }
 
+  const provider = transaction.provider?.toString().trim().toLowerCase() || "manual";
+  if (provider === "revenuecat" && type !== "full") {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "RevenueCat store transactions support full refunds only"
+    );
+  }
+  if (provider === "apple") {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Apple refunds must be issued in App Store Connect; RevenueCat will synchronize the refund through the webhook"
+    );
+  }
+
   let refundAmount;
   if (type === "full") {
     refundAmount = refundable;
@@ -2554,9 +2692,18 @@ export const processRefund = catchAsync(async (req, res) => {
     refundAmount = parsed;
   }
 
-  // Issue Stripe refund first (before touching DB) so any Stripe error fails fast
+  // Issue the provider refund before touching local state so provider failures
+  // cannot create false refund records in MongoDB.
   let stripeRefundId = "";
-  if (transaction.provider === "stripe" && transaction.stripePaymentIntentId) {
+  let paypalRefundId = "";
+  let revenueCatRefundId = "";
+  if (provider === "stripe") {
+    if (!transaction.stripePaymentIntentId) {
+      throw new AppError(
+        httpStatus.BAD_REQUEST,
+        "Stripe payment intent ID is missing from this transaction"
+      );
+    }
     const stripe = getStripeClient();
     const currency = transaction.currency ?? "USD";
     const stripeRefund = await stripe.refunds.create({
@@ -2565,6 +2712,19 @@ export const processRefund = catchAsync(async (req, res) => {
       reason: "requested_by_customer",
     });
     stripeRefundId = stripeRefund.id;
+  } else if (provider === "paypal") {
+    const paypalRefund = await refundPayPalTransaction({
+      transaction,
+      amount: refundAmount,
+      currency: transaction.currency,
+    });
+    paypalRefundId = paypalRefund.id;
+  } else if (provider === "revenuecat") {
+    const revenueCatRefund = await refundRevenueCatTransaction(transaction);
+    revenueCatRefundId =
+      revenueCatRefund?.id?.toString().trim() ||
+      transaction.revenueCatTransactionId ||
+      "";
   }
 
   const newRefundedAmount = alreadyRefunded + refundAmount;
@@ -2575,18 +2735,23 @@ export const processRefund = catchAsync(async (req, res) => {
   transaction.refundHistory.push({
     refundedAt: new Date(),
     amount: refundAmount,
-    reason: reason.trim(),
+    reason,
     adminId: adminId || null,
     type,
     stripeRefundId,
+    paypalRefundId,
+    revenueCatRefundId,
   });
 
-  if (isFullyRefunded && transactionType === "plan") {
+  if (isFullyRefunded) {
     transaction.status = "refunded";
+  }
+
+  if (isFullyRefunded && transactionType === "plan") {
     await markPlanPurchaseStatusAndRewards({
       planPurchase: transaction,
       status: "refunded",
-      reason: reason.trim(),
+      reason,
     });
     await ResourcePurchase.updateMany(
       { userId: transaction.userId, "metadata.professionalPlanPurchaseId": transaction._id },
@@ -2596,15 +2761,27 @@ export const processRefund = catchAsync(async (req, res) => {
     await transaction.save();
   }
 
-  if (transactionType === "plan") {
+  const subscribedUser =
+    transactionType === "plan" && isFullyRefunded
+      ? await User.findById(transaction.userId)
+      : null;
+  const revokeCurrentPlan =
+    transactionType === "plan" &&
+    isFullyRefunded &&
+    shouldRevokeCurrentSubscription(subscribedUser, provider);
+
+  if (revokeCurrentPlan) {
     await Promise.all([
       User.findByIdAndUpdate(transaction.userId, {
         subscriptionTier: "starter",
         subscriptionStartedAt: null,
         subscriptionExpiresAt: null,
+        subscriptionProvider: "",
+        subscriptionExternalId: "",
+        subscriptionWillRenew: null,
       }),
       ExamAccess.updateMany(
-        { userId: transaction.userId, status: "unlocked" },
+        planAccessRefundFilter(transaction, provider),
         {
           $set: {
             status: "free",
@@ -2617,10 +2794,14 @@ export const processRefund = catchAsync(async (req, res) => {
     ]);
   }
 
+  if (isFullyRefunded) {
+    await rebuildUserResourceAccess(transaction.userId);
+  }
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: `Refund of $${refundAmount.toFixed(2)} processed successfully${stripeRefundId ? ` (Stripe: ${stripeRefundId})` : ""}`,
+    message: `Refund of $${refundAmount.toFixed(2)} processed successfully`,
     data: transaction,
   });
 });
@@ -2679,6 +2860,8 @@ export const manualUnlockExam = catchAsync(async (req, res) => {
       status: "unlocked",
       paymentStatus: "manual",
       purchaseType: "manual",
+      accessDuration: "lifetime",
+      expiresAt: null,
       purchasePrice: 0,
       maxQuestionsPerSession: 30,
       purchasedAt: new Date(),
@@ -2727,6 +2910,8 @@ export const manualUnlockExamsBulk = catchAsync(async (req, res) => {
           status: "unlocked",
           paymentStatus: "manual",
           purchaseType: "manual",
+          accessDuration: "lifetime",
+          expiresAt: null,
           purchasePrice: 0,
           maxQuestionsPerSession: 30,
           purchasedAt: unlockedAt,

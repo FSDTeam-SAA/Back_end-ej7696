@@ -19,6 +19,10 @@ import {
   getUnlockedResourceCodeSet,
   normalizeProductCode,
 } from "../utils/resource.service.js";
+import {
+  buildExamUnlockSummary,
+  isActiveProfessionalSubscription,
+} from "../utils/examAccess.helpers.js";
 
 const safeUserSelect =
   "-password -refreshToken -verificationInfo -password_reset_token";
@@ -110,12 +114,6 @@ const parseIfJson = (value, fieldName) => {
   }
 };
 
-const addMonths = (date, months) => {
-  const result = new Date(date);
-  result.setMonth(result.getMonth() + months);
-  return result;
-};
-
 const normalizePlanIntervalUnit = (unit) => {
   const value = unit?.toString().trim().toLowerCase();
   if (!value) return "months";
@@ -171,32 +169,6 @@ const buildInstallationSessionData = (user) => ({
   activeInstallationId: user.activeInstallationId || "",
   hasActiveInstallation: Boolean(user.activeDeviceId || user.activeInstallationId),
 });
-
-const buildExamUnlockSummary = ({ access, examMap, user }) => {
-  const unlockDate = access?.purchasedAt || null;
-  const fallbackExpiresAt = unlockDate
-    ? addMonths(unlockDate, PROFESSIONAL_SUBSCRIPTION_MONTHS)
-    : null;
-  const expiresAt =
-    access?.purchaseType === "plan"
-      ? user?.subscriptionExpiresAt || fallbackExpiresAt
-      : fallbackExpiresAt;
-  const isExpired = expiresAt
-    ? new Date(expiresAt).getTime() <= Date.now()
-    : false;
-
-  return {
-    examId: access.examId,
-    examName: examMap[access.examId?.toString()] || null,
-    purchaseType: access.purchaseType || null,
-    paymentStatus: access.paymentStatus || null,
-    unlockDate,
-    purchasedAt: unlockDate,
-    expiresAt,
-    expiryMonths: PROFESSIONAL_SUBSCRIPTION_MONTHS,
-    isExpired,
-  };
-};
 
 const RESOURCE_SOURCE_LABELS = {
   manual: "Manual unlock",
@@ -370,20 +342,28 @@ export const getMyUnlocks = catchAsync(async (req, res) => {
     ...new Set(accesses.map((access) => access.examId?.toString()).filter(Boolean)),
   ];
   const exams = examIds.length
-    ? await Exam.find({ _id: { $in: examIds } }).select("name").lean()
+    ? await Exam.find({ _id: { $in: examIds } }).select("name image.url").lean()
     : [];
   const examMap = exams.reduce((acc, exam) => {
     acc[exam._id.toString()] = exam.name;
     return acc;
   }, {});
+  const examImageMap = exams.reduce((acc, exam) => {
+    acc[exam._id.toString()] = exam.image?.url || null;
+    return acc;
+  }, {});
 
-  const unlockedExams = accesses.map((access) =>
+  const hasActiveSubscription = isActiveProfessionalSubscription(user);
+  const ownedExams = accesses.map((access) =>
     buildExamUnlockSummary({
       access,
       examMap,
+      examImageMap,
       user,
+      unlocked: hasActiveSubscription,
     })
   );
+  const unlockedExams = hasActiveSubscription ? ownedExams : [];
 
   const resourceAccess = await buildUnlockedResources(user);
 
@@ -394,6 +374,8 @@ export const getMyUnlocks = catchAsync(async (req, res) => {
     data: {
       unlockedExams,
       unlockedExamCount: unlockedExams.length,
+      ownedExams,
+      ownedExamCount: ownedExams.length,
       ...resourceAccess,
     },
   });
@@ -933,9 +915,15 @@ export const updateUserSubscription = catchAsync(async (req, res) => {
     const subscriptionExpiresAt = addInterval(subscriptionStartedAt, count, unit);
     user.subscriptionStartedAt = subscriptionStartedAt;
     user.subscriptionExpiresAt = subscriptionExpiresAt;
+    user.subscriptionProvider = "manual";
+    user.subscriptionExternalId = "";
+    user.subscriptionWillRenew = false;
   } else {
     user.subscriptionStartedAt = null;
     user.subscriptionExpiresAt = null;
+    user.subscriptionProvider = "";
+    user.subscriptionExternalId = "";
+    user.subscriptionWillRenew = null;
   }
   await user.save();
 
