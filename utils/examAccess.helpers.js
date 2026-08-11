@@ -36,6 +36,21 @@ export const canAccessOwnedExam = ({
 } = {}) =>
   isExamOwned(access) && isActiveProfessionalSubscription(user, referenceDate);
 
+export const buildSelectedExamUnlockResponse = ({ exam, access } = {}) => {
+  if (!exam || !access) return null;
+
+  return {
+    examId: exam._id,
+    examName: exam.name || null,
+    unlocked: isExamOwned(access),
+    accessId: access._id,
+    purchaseType: access.purchaseType,
+    paymentStatus: access.paymentStatus,
+    accessDuration: access.accessDuration,
+    expiresAt: access.expiresAt,
+  };
+};
+
 export const buildExamUnlockSummary = ({
   access,
   examMap,

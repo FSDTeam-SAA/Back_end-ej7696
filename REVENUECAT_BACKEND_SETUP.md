@@ -59,6 +59,50 @@ the original raw JSON bytes and rejects signatures older than five minutes.
 - Flutter also calls the authenticated sync endpoint after purchase/restore to
   avoid waiting for webhook delivery.
 
+## Unlock the selected exam after subscribing
+
+After RevenueCat reports a successful Professional subscription, Flutter must
+call the authenticated sync endpoint with the exam selected before checkout:
+
+```http
+POST /api/v1/payments/revenuecat/sync
+Authorization: Bearer <backend-access-token>
+Content-Type: application/json
+
+{
+  "examId": "<selected-exam-mongodb-id>",
+  "productId": "<revenuecat-subscription-product-id>"
+}
+```
+
+`selectedExamId` is also accepted as an alias for `examId`. The backend verifies
+the signed-in user's current RevenueCat access before writing the `ExamAccess`
+record. A successful response includes:
+
+```json
+{
+  "success": true,
+  "message": "RevenueCat subscription confirmed and selected exam unlocked",
+  "data": {
+    "subscriptionTier": "professional",
+    "hasProfessionalAccess": true,
+    "selectedExam": {
+      "examId": "<selected-exam-mongodb-id>",
+      "unlocked": true,
+      "purchaseType": "plan",
+      "paymentStatus": "completed",
+      "accessDuration": "subscription",
+      "expiresAt": "<subscription-expiration>"
+    }
+  }
+}
+```
+
+The client should continue only when `data.subscriptionTier` is `professional`
+and `data.selectedExam.unlocked` is `true`. If RevenueCat has not confirmed the
+subscription, the selected exam is not unlocked and the endpoint returns HTTP
+`402 Payment Required`.
+
 ## Refund behavior
 
 The existing admin refund endpoint remains:

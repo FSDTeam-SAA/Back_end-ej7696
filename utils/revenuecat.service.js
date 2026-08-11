@@ -5,6 +5,7 @@ import { Exam } from "../model/exam.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { ProfessionalPlanPurchase } from "../model/professionalPlanPurchase.model.js";
 import { User } from "../model/user.model.js";
+import { buildSelectedExamUnlockResponse } from "./examAccess.helpers.js";
 import {
   internalProductIdentifierFromObject,
   isRevenueCatRefundEvent,
@@ -447,6 +448,7 @@ export const syncRevenueCatCustomerAccess = async ({
   const syncedExamIds = new Set();
   const unresolvedProductIds = new Set();
   const unmappedProductIdentifiers = new Set();
+  let selectedExam = null;
 
   if (state.hasProfessionalAccess) {
     const subscription = state.currentProfessionalSubscription;
@@ -490,14 +492,32 @@ export const syncRevenueCatCustomerAccess = async ({
       if (!exam || exam.status !== "active") {
         throw new AppError(httpStatus.NOT_FOUND, "Active exam not found");
       }
-      await unlockExamFromRevenueCat({
+
+      // Do not replace an existing lifetime/manual unlock with subscription-only
+      // access. An active Professional subscription makes that owned exam usable.
+      const existingAccess = await ExamAccess.findOne({
         userId: user._id,
-        exam,
-        productId: requestedProductId || getRevenueCatConfig().iosProductId,
-        purchaseType: "plan",
-        accessDuration: "subscription",
-        expiresAt,
+        examId: exam._id,
       });
+      const hasDurableAccess =
+        existingAccess?.status === "unlocked" &&
+        existingAccess?.purchaseType !== "plan";
+      const access = hasDurableAccess
+        ? existingAccess
+        : await unlockExamFromRevenueCat({
+            userId: user._id,
+            exam,
+            productId:
+              requestedProductId ||
+              productIdentifierFromObject(subscription) ||
+              getRevenueCatConfig().iosProductId,
+            purchaseType: "plan",
+            accessDuration: "subscription",
+            expiresAt,
+          });
+
+      syncedExamIds.add(exam._id.toString());
+      selectedExam = buildSelectedExamUnlockResponse({ exam, access });
     }
   } else if (user.subscriptionProvider === "revenuecat") {
     user.subscriptionTier = "starter";
@@ -509,6 +529,13 @@ export const syncRevenueCatCustomerAccess = async ({
     user.subscriptionRevokedAt = null;
     await user.save();
     await revokeRevenueCatPlanAccess(user._id);
+  }
+
+  if (requestedExamId && !selectedExam?.unlocked) {
+    throw new AppError(
+      httpStatus.PAYMENT_REQUIRED,
+      "RevenueCat has not confirmed an active Professional subscription for this exam unlock"
+    );
   }
 
   const usablePurchases = state.purchases.filter(purchaseIsUsable);
@@ -561,6 +588,7 @@ export const syncRevenueCatCustomerAccess = async ({
       unmappedProductIdentifiers: [...unmappedProductIdentifiers],
       subscriptionCount: state.subscriptions.length,
       hasProfessionalAccess: state.hasProfessionalAccess,
+      selectedExam,
     },
   };
 };

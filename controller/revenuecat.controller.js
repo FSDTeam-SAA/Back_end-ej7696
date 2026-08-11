@@ -211,14 +211,16 @@ export const syncMyRevenueCatAccess = catchAsync(async (req, res) => {
 
   const { user, state, syncSummary } = await syncRevenueCatCustomerAccess({
     appUserId: userId,
-    requestedExamId: clean(req.body?.examId),
+    requestedExamId: clean(req.body?.examId || req.body?.selectedExamId),
     requestedProductId: clean(req.body?.productId),
   });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "RevenueCat access synchronized",
+    message: syncSummary.selectedExam?.unlocked
+      ? "RevenueCat subscription confirmed and selected exam unlocked"
+      : "RevenueCat access synchronized",
     data: {
       subscriptionTier: user.subscriptionTier,
       subscriptionStartedAt: user.subscriptionStartedAt,

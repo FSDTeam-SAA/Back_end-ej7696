@@ -14,6 +14,7 @@ import {
 } from "../utils/revenuecat.helpers.js";
 import {
   buildExamUnlockSummary,
+  buildSelectedExamUnlockResponse,
   canAccessOwnedExam,
   isActiveProfessionalSubscription,
 } from "../utils/examAccess.helpers.js";
@@ -134,6 +135,27 @@ test("RevenueCat lifetime exam access never receives a fallback expiry", () => {
   assert.equal(result.expiresAt, null);
   assert.equal(result.expiryMonths, null);
   assert.equal(result.isExpired, false);
+});
+
+test("selected exam sync response explicitly confirms the unlocked exam", () => {
+  const result = buildSelectedExamUnlockResponse({
+    exam: { _id: "exam-570", name: "API 570" },
+    access: {
+      _id: "access-1",
+      examId: "exam-570",
+      status: "unlocked",
+      purchaseType: "plan",
+      paymentStatus: "completed",
+      accessDuration: "subscription",
+      expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+    },
+  });
+
+  assert.equal(result.examId, "exam-570");
+  assert.equal(result.examName, "API 570");
+  assert.equal(result.unlocked, true);
+  assert.equal(result.purchaseType, "plan");
+  assert.equal(result.paymentStatus, "completed");
 });
 
 test("exam ownership is accessible only with an active Professional subscription", () => {
