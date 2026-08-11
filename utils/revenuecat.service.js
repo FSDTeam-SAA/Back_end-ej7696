@@ -868,5 +868,5 @@ export const revenueCatInternals = {
   dateFromMillis,
   isProfessionalProduct,
   productIdentifierFromObject,
-  purchaseIsUsable,
+  purchaseIsUsable: revenueCatPurchaseIsUsable,
 };
