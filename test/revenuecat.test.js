@@ -12,7 +12,11 @@ import {
   revenueCatActionSucceeded,
   revenueCatSubscriptionWasCancelled,
 } from "../utils/revenuecat.helpers.js";
-import { buildExamUnlockSummary } from "../utils/examAccess.helpers.js";
+import {
+  buildExamUnlockSummary,
+  canAccessOwnedExam,
+  isActiveProfessionalSubscription,
+} from "../utils/examAccess.helpers.js";
 
 test("RevenueCat webhook authorization accepts raw and Bearer token formats", () => {
   assert.equal(isValidRevenueCatAuthorization("secret", "secret"), true);
@@ -130,6 +134,62 @@ test("RevenueCat lifetime exam access never receives a fallback expiry", () => {
   assert.equal(result.expiresAt, null);
   assert.equal(result.expiryMonths, null);
   assert.equal(result.isExpired, false);
+});
+
+test("exam ownership is accessible only with an active Professional subscription", () => {
+  const access = { status: "unlocked", purchaseType: "exam" };
+  const activeUser = {
+    subscriptionTier: "professional",
+    subscriptionExpiresAt: "2030-01-01T00:00:00.000Z",
+  };
+  const starterUser = {
+    subscriptionTier: "starter",
+    subscriptionExpiresAt: null,
+  };
+  const now = new Date("2029-01-01T00:00:00.000Z");
+
+  assert.equal(isActiveProfessionalSubscription(activeUser, now), true);
+  assert.equal(
+    canAccessOwnedExam({ user: activeUser, access, referenceDate: now }),
+    true
+  );
+  assert.equal(
+    canAccessOwnedExam({ user: starterUser, access, referenceDate: now }),
+    false
+  );
+  assert.equal(
+    canAccessOwnedExam({
+      user: activeUser,
+      access: { status: "free", purchaseType: "exam" },
+      referenceDate: now,
+    }),
+    false
+  );
+});
+
+test("legacy standalone exam purchases are summarized as durable ownership", () => {
+  const result = buildExamUnlockSummary({
+    access: {
+      examId: "exam-1184",
+      status: "unlocked",
+      purchaseType: "exam",
+      paymentStatus: "completed",
+      accessDuration: "three_months",
+      purchasedAt: new Date("2025-01-01T00:00:00.000Z"),
+      expiresAt: new Date("2025-04-01T00:00:00.000Z"),
+    },
+    examMap: { "exam-1184": "API 1184" },
+    user: { subscriptionTier: "starter" },
+    unlocked: false,
+    now: new Date("2030-01-01T00:00:00.000Z").getTime(),
+  });
+
+  assert.equal(result.owned, true);
+  assert.equal(result.unlocked, false);
+  assert.equal(result.requiresSubscription, true);
+  assert.equal(result.isLifetime, true);
+  assert.equal(result.isExpired, false);
+  assert.equal(result.expiresAt, null);
 });
 
 test("only a successful Customer Center refund submission changes access", () => {

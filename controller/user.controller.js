@@ -19,7 +19,10 @@ import {
   getUnlockedResourceCodeSet,
   normalizeProductCode,
 } from "../utils/resource.service.js";
-import { buildExamUnlockSummary } from "../utils/examAccess.helpers.js";
+import {
+  buildExamUnlockSummary,
+  isActiveProfessionalSubscription,
+} from "../utils/examAccess.helpers.js";
 
 const safeUserSelect =
   "-password -refreshToken -verificationInfo -password_reset_token";
@@ -350,14 +353,17 @@ export const getMyUnlocks = catchAsync(async (req, res) => {
     return acc;
   }, {});
 
-  const unlockedExams = accesses.map((access) =>
+  const hasActiveSubscription = isActiveProfessionalSubscription(user);
+  const ownedExams = accesses.map((access) =>
     buildExamUnlockSummary({
       access,
       examMap,
       examImageMap,
       user,
+      unlocked: hasActiveSubscription,
     })
   );
+  const unlockedExams = hasActiveSubscription ? ownedExams : [];
 
   const resourceAccess = await buildUnlockedResources(user);
 
@@ -368,6 +374,8 @@ export const getMyUnlocks = catchAsync(async (req, res) => {
     data: {
       unlockedExams,
       unlockedExamCount: unlockedExams.length,
+      ownedExams,
+      ownedExamCount: ownedExams.length,
       ...resourceAccess,
     },
   });

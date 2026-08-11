@@ -39,6 +39,7 @@ const normalizeExpiredProfessionalSubscription = async (user) => {
   user.subscriptionProvider = "";
   user.subscriptionExternalId = "";
   user.subscriptionWillRenew = null;
+  user.subscriptionRevokedAt = null;
   await user.save();
   return user;
 };
@@ -70,7 +71,7 @@ export const protect = async (req, res, next) => {
 
   try {
     const decoded = await jwt.verify(token, process.env.JWT_ACCESS_SECRET);
-    const user = await User.findById(decoded._id);
+    let user = await User.findById(decoded._id);
     if (user && (await User.isOTPVerified(user._id))) {
       if (user.status !== "active") {
         throw new AppError(httpStatus.FORBIDDEN, "Account is inactive");
@@ -83,6 +84,7 @@ export const protect = async (req, res, next) => {
         throw new AppError(401, "Session expired. Please login again.");
       }
       validateInstallationContext(req, decoded, user);
+      user = await normalizeExpiredProfessionalSubscription(user);
       req.user = user;
     } else {
       throw new AppError(401, "Invalid token");
@@ -113,6 +115,7 @@ export const optionalProtect = async (req, res, next) => {
         throw new AppError(401, "Session expired. Please login again.");
       }
       validateInstallationContext(req, decoded, user);
+      user = await normalizeExpiredProfessionalSubscription(user);
       req.user = user;
     } else {
       throw new AppError(401, "Invalid token");
