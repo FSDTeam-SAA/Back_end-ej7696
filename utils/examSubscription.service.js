@@ -1,3 +1,6 @@
+import httpStatus from "http-status";
+
+import AppError from "../errors/AppError.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { ExamSubscriptionTransaction } from "../model/examSubscriptionTransaction.model.js";
 import { isExamEntitlementActive } from "./examAccess.helpers.js";
@@ -64,7 +67,10 @@ export const grantExamEntitlement = async ({
       (existingTransaction.userId.toString() !== userId.toString() ||
         existingTransaction.examId.toString() !== examId.toString())
     ) {
-      throw new Error("Payment transaction is already linked to another exam entitlement");
+      throw new AppError(
+        httpStatus.CONFLICT,
+        "Payment transaction is already linked to another exam entitlement"
+      );
     }
   }
 

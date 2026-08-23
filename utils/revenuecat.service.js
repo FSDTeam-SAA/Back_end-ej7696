@@ -384,6 +384,16 @@ const unlockExamFromRevenueCat = async ({
   expiresAt = null,
   source = purchaseType === "plan" ? "initial_included" : "exam_subscription",
 }) => {
+  // A professional subscription unlocks several exams over its life, so the
+  // store/subscription identifier is shared across them. Entitlements are
+  // per exam, so scope the ledger key by exam; otherwise the second exam
+  // collides with the first one's transaction. The unscoped store id is still
+  // recorded in paymentFields below.
+  const storeTransactionId = clean(transactionId);
+  const scopedTransactionId = storeTransactionId
+    ? `${storeTransactionId}:${exam._id}`
+    : "";
+
   const result = await grantExamEntitlement({
     userId,
     examId: exam._id,
@@ -393,13 +403,13 @@ const unlockExamFromRevenueCat = async ({
     currency,
     startedAt: purchasedAt,
     expiresAt: expiresAt || addExamAccessMonths(purchasedAt),
-    externalTransactionId: clean(transactionId),
+    externalTransactionId: scopedTransactionId,
     originalTransactionId: clean(originalTransactionId),
     productId: clean(productId),
     purchaseType,
     paymentFields: {
       revenueCatProductId: clean(productId),
-      revenueCatTransactionId: clean(transactionId),
+      revenueCatTransactionId: storeTransactionId,
       revenueCatOriginalTransactionId: clean(originalTransactionId),
     },
     metadata: { provider: "revenuecat", accessDuration },
