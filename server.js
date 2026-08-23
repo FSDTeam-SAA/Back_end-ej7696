@@ -25,6 +25,7 @@ export const io = new Server(server, {
 });
 app.set("io", io);
 
+
 const normalizeOrigin = (origin) =>
   origin?.toString().trim().replace(/\/+$/, "");
 
