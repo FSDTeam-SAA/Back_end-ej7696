@@ -24,6 +24,7 @@ import {
   addExamAccessMonths,
   buildLegacyExamEntitlementWindow,
 } from "../utils/examSubscription.service.js";
+import { examLedgerTransactionId } from "../utils/revenuecat.service.js";
 
 test("six-month access uses calendar months", () => {
   assert.equal(
@@ -305,4 +306,25 @@ test("exam product confirmation rejects missing, refunded, and revoked purchases
     false
   );
   assert.equal(revenueCatPurchasesIncludeProduct([], productId), false);
+});
+
+test("exam ledger keys are scoped by exam so grant and revoke agree", () => {
+  const storeTransactionId = "2000001225791400";
+  const examId = "69ce2e0071361c171f4103ad";
+  const otherExamId = "69e6b2739e82b35d4718ab48";
+
+  assert.equal(
+    examLedgerTransactionId(storeTransactionId, examId),
+    `${storeTransactionId}:${examId}`
+  );
+  // One subscription unlocks several exams over its life, so the same store
+  // id must never resolve to the same ledger row for two different exams.
+  assert.notEqual(
+    examLedgerTransactionId(storeTransactionId, examId),
+    examLedgerTransactionId(storeTransactionId, otherExamId)
+  );
+  assert.equal(examLedgerTransactionId("", examId), "");
+  assert.equal(examLedgerTransactionId(storeTransactionId, null), "");
+  assert.equal(examLedgerTransactionId(`  ${storeTransactionId}  `, examId),
+    `${storeTransactionId}:${examId}`);
 });

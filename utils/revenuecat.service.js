@@ -370,6 +370,17 @@ const findExamForProduct = async (productId) => {
   return Exam.findOne({ name: examNamePattern(examCode), status: "active" });
 };
 
+// A professional subscription unlocks several exams over its life, so the
+// store/subscription identifier is shared across them. Entitlements are per
+// exam, so scope the ledger key by exam; otherwise the second exam collides
+// with the first one's transaction. Grants and revocations must build the key
+// the same way or a revoke silently matches nothing, so both go through here.
+export const examLedgerTransactionId = (transactionId, examId) => {
+  const storeTransactionId = clean(transactionId);
+  if (!storeTransactionId || !examId) return "";
+  return `${storeTransactionId}:${examId}`;
+};
+
 const unlockExamFromRevenueCat = async ({
   userId,
   exam,
@@ -384,15 +395,12 @@ const unlockExamFromRevenueCat = async ({
   expiresAt = null,
   source = purchaseType === "plan" ? "initial_included" : "exam_subscription",
 }) => {
-  // A professional subscription unlocks several exams over its life, so the
-  // store/subscription identifier is shared across them. Entitlements are
-  // per exam, so scope the ledger key by exam; otherwise the second exam
-  // collides with the first one's transaction. The unscoped store id is still
-  // recorded in paymentFields below.
+  // The unscoped store id is still recorded in paymentFields below.
   const storeTransactionId = clean(transactionId);
-  const scopedTransactionId = storeTransactionId
-    ? `${storeTransactionId}:${exam._id}`
-    : "";
+  const scopedTransactionId = examLedgerTransactionId(
+    storeTransactionId,
+    exam._id
+  );
 
   const result = await grantExamEntitlement({
     userId,
@@ -467,6 +475,28 @@ export const syncRevenueCatCustomerAccess = async ({
     : "";
   let requestedExam = null;
   let selectedExam = null;
+  const conflicts = [];
+
+  // A single unusable ledger row must never abort the whole sync: RevenueCat
+  // replays the customer's entire purchase history on every call, so one stale
+  // or transferred row from an old test/store account would otherwise skip
+  // every exam behind it — including the purchase the user is waiting on.
+  // Record the failure and carry on; only the requested purchase still throws,
+  // so the caller never sees a false success for the exam it asked about.
+  const syncExamUnlock = async (options, { requested = false } = {}) => {
+    try {
+      return await unlockExamFromRevenueCat(options);
+    } catch (error) {
+      if (requested) throw error;
+      conflicts.push({
+        productId: clean(options?.productId),
+        examId: options?.exam?._id?.toString() || "",
+        status: error?.statusCode || httpStatus.INTERNAL_SERVER_ERROR,
+        message: clean(error?.message) || "Exam unlock failed",
+      });
+      return null;
+    }
+  };
 
   if (requestedExamId) {
     if (!mongoose.Types.ObjectId.isValid(requestedExamId)) {
@@ -603,17 +633,20 @@ export const syncRevenueCatCustomerAccess = async ({
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
-    const access = await unlockExamFromRevenueCat({
-      userId: user._id,
-      exam: requestedExam,
-      productId: normalizedRequestedProductId,
-      transactionId: subscriptionId,
-      purchaseType: "plan",
-      source: "initial_included",
-      purchasedAt: startsAt,
-      expiresAt,
-      price: 0,
-    });
+    const access = await syncExamUnlock(
+      {
+        userId: user._id,
+        exam: requestedExam,
+        productId: normalizedRequestedProductId,
+        transactionId: subscriptionId,
+        purchaseType: "plan",
+        source: "initial_included",
+        purchasedAt: startsAt,
+        expiresAt,
+        price: 0,
+      },
+      { requested: true }
+    );
     access.metadata = {
       ...(access.metadata || {}),
       includedWithInitialPrice: planPurchase.planFinalPrice,
@@ -645,7 +678,7 @@ export const syncRevenueCatCustomerAccess = async ({
           const startsAt = initialPurchase.purchasedAt || now;
           const expiresAt = initialPurchase.metadata?.initialExamExpiresAt ||
             addExamAccessMonths(startsAt);
-          await unlockExamFromRevenueCat({
+          const initialAccess = await syncExamUnlock({
             userId: user._id,
             exam: initialExam,
             productId: initialPurchase.revenueCatProductId,
@@ -660,7 +693,7 @@ export const syncRevenueCatCustomerAccess = async ({
             expiresAt,
             price: 0,
           });
-          syncedExamIds.add(initialExam._id.toString());
+          if (initialAccess) syncedExamIds.add(initialExam._id.toString());
         }
       }
     }
@@ -689,17 +722,23 @@ export const syncRevenueCatCustomerAccess = async ({
     const subscriptionTransactionId =
       clean(subscription?.store_purchase_identifier) ||
       `${clean(subscription?.id) || productId}:${startsAt.toISOString()}`;
-    const access = await unlockExamFromRevenueCat({
-      userId: user._id,
-      exam,
-      productId,
-      transactionId: subscriptionTransactionId,
-      originalTransactionId: clean(subscription?.original_transaction_id),
-      purchasedAt: startsAt,
-      expiresAt,
-    });
+    const isRequestedPurchase =
+      Boolean(requestedExam) && productId === requestedExamProductId;
+    const access = await syncExamUnlock(
+      {
+        userId: user._id,
+        exam,
+        productId,
+        transactionId: subscriptionTransactionId,
+        originalTransactionId: clean(subscription?.original_transaction_id),
+        purchasedAt: startsAt,
+        expiresAt,
+      },
+      { requested: isRequestedPurchase }
+    );
+    if (!access) continue;
     syncedExamIds.add(exam._id.toString());
-    if (requestedExam && productId === requestedExamProductId) {
+    if (isRequestedPurchase) {
       selectedExam = buildSelectedExamUnlockResponse({ exam, access });
     }
   }
@@ -723,21 +762,27 @@ export const syncRevenueCatCustomerAccess = async ({
     }
     const legacyPurchasedAt = dateFromMillis(purchase?.purchased_at) || now;
     const legacyWindow = buildLegacyExamEntitlementWindow(legacyPurchasedAt);
-    const access = await unlockExamFromRevenueCat({
-      userId: user._id,
-      exam,
-      productId,
-      transactionId: clean(purchase?.store_purchase_identifier || purchase?.id),
-      purchasedAt: legacyWindow.startedAt,
-      expiresAt: legacyWindow.expiresAt,
-      source: "legacy",
-    });
-    syncedExamIds.add(exam._id.toString());
-    if (
-      requestedExam &&
+    const isRequestedPurchase =
+      Boolean(requestedExam) &&
       productId === requestedExamProductId &&
-      exam._id.toString() === requestedExam._id.toString()
-    ) {
+      exam._id.toString() === requestedExam._id.toString();
+    const access = await syncExamUnlock(
+      {
+        userId: user._id,
+        exam,
+        productId,
+        transactionId: clean(
+          purchase?.store_purchase_identifier || purchase?.id
+        ),
+        purchasedAt: legacyWindow.startedAt,
+        expiresAt: legacyWindow.expiresAt,
+        source: "legacy",
+      },
+      { requested: isRequestedPurchase }
+    );
+    if (!access) continue;
+    syncedExamIds.add(exam._id.toString());
+    if (isRequestedPurchase) {
       selectedExam = buildSelectedExamUnlockResponse({ exam, access });
     }
   }
@@ -766,6 +811,7 @@ export const syncRevenueCatCustomerAccess = async ({
       syncedExamIds: [...syncedExamIds],
       unresolvedProductIds: [...unresolvedProductIds],
       unmappedProductIdentifiers: [...unmappedProductIdentifiers],
+      conflicts,
       subscriptionCount: state.subscriptions.length,
       hasProfessionalAccess: state.hasProfessionalAccess,
       selectedExam,
@@ -888,7 +934,11 @@ const applyExamEvent = async ({ user, event }) => {
     return revokeExamEntitlement({
       userId: user._id,
       examId: exam._id,
-      externalTransactionId: clean(event.transaction_id),
+      provider: "revenuecat",
+      externalTransactionId: examLedgerTransactionId(
+        event.transaction_id,
+        exam._id
+      ),
       reason: "RevenueCat refund",
       transactionStatus: "refunded",
     });
@@ -943,10 +993,20 @@ export const processRevenueCatEvent = async ({ event, user }) => {
       examId: { $ne: null },
     }).sort({ purchasedAt: 1 });
     if (initialPurchase?.examId) {
+      // The included exam was granted under the plan's subscription id (see
+      // the initial-purchase branch of syncRevenueCatCustomerAccess), not
+      // under this event's transaction id, so key the revoke off the same
+      // value the grant used.
       await revokeExamEntitlement({
         userId: user._id,
         examId: initialPurchase.examId,
-        externalTransactionId: clean(event.transaction_id),
+        provider: "revenuecat",
+        externalTransactionId: examLedgerTransactionId(
+          initialPurchase.revenueCatSubscriptionId ||
+            initialPurchase.revenueCatTransactionId ||
+            event.transaction_id,
+          initialPurchase.examId
+        ),
         reason: "Initial purchase refunded",
         transactionStatus: "refunded",
       });

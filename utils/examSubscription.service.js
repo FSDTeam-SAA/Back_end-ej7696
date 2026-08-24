@@ -7,6 +7,13 @@ import { isExamEntitlementActive } from "./examAccess.helpers.js";
 
 export const EXAM_ACCESS_DURATION_MONTHS = 6;
 
+// App Store / Play Store accounts can legitimately move between application
+// accounts, and RevenueCat re-attributes their purchase history to the newest
+// App User ID. For those providers a transaction that already belongs to
+// another user is a transfer, not a conflict. Card providers stay strict: a
+// Stripe/PayPal charge must never change owner.
+const STORE_TRANSFER_PROVIDERS = new Set(["revenuecat", "apple", "google"]);
+
 export const addExamAccessMonths = (
   value,
   months = EXAM_ACCESS_DURATION_MONTHS
@@ -62,15 +69,52 @@ export const grantExamEntitlement = async ({
       provider,
       externalTransactionId,
     }).lean();
-    if (
-      existingTransaction &&
-      (existingTransaction.userId.toString() !== userId.toString() ||
-        existingTransaction.examId.toString() !== examId.toString())
-    ) {
-      throw new AppError(
-        httpStatus.CONFLICT,
-        "Payment transaction is already linked to another exam entitlement"
-      );
+    if (existingTransaction) {
+      const examMatches =
+        existingTransaction.examId?.toString() === examId.toString();
+      const userMatches =
+        existingTransaction.userId?.toString() === userId.toString();
+      const isStoreTransfer =
+        examMatches &&
+        !userMatches &&
+        // A row without an owner cannot be transferred: passing an undefined
+        // userId to the revoke below would widen its filter to the exam alone
+        // and revoke an unrelated account.
+        Boolean(existingTransaction.userId) &&
+        STORE_TRANSFER_PROVIDERS.has(
+          provider?.toString().trim().toLowerCase()
+        );
+
+      if (!examMatches || (!userMatches && !isStoreTransfer)) {
+        throw new AppError(
+          httpStatus.CONFLICT,
+          "Payment transaction is already linked to another exam entitlement"
+        );
+      }
+
+      if (isStoreTransfer) {
+        // Stores allow a single owner per purchase, so hand the entitlement
+        // over instead of rejecting the sync: revoke the previous owner's
+        // access, then re-point the ledger row at the new user. The unique
+        // index on { provider, externalTransactionId } means the row has to
+        // move rather than be duplicated.
+        await revokeExamEntitlement({
+          userId: existingTransaction.userId,
+          examId: existingTransaction.examId,
+          reason: "store_transfer",
+        });
+        await ExamSubscriptionTransaction.updateOne(
+          { _id: existingTransaction._id },
+          {
+            $set: {
+              userId,
+              "metadata.transferredFromUserId":
+                existingTransaction.userId?.toString() || "",
+              "metadata.transferredAt": new Date(),
+            },
+          }
+        );
+      }
     }
   }
 
@@ -190,6 +234,7 @@ export const markExamSubscriptionTransactionStatus = async ({
 export const revokeExamEntitlement = async ({
   userId,
   examId,
+  provider = "",
   externalTransactionId = "",
   reason = "revoked",
   transactionStatus = "revoked",
@@ -208,8 +253,16 @@ export const revokeExamEntitlement = async ({
     { new: true }
   );
   if (externalTransactionId) {
+    // Grants key the ledger by { provider, externalTransactionId } — the
+    // provider has to be part of the filter, otherwise the same store id
+    // reused by another provider would be revoked by mistake. Callers that
+    // build a scoped id (see examLedgerTransactionId) must pass the same
+    // scoped value here or nothing matches.
     await ExamSubscriptionTransaction.findOneAndUpdate(
-      { externalTransactionId },
+      {
+        ...(provider ? { provider } : {}),
+        externalTransactionId,
+      },
       { $set: { status: transactionStatus, "metadata.revocationReason": reason } }
     );
   }
