@@ -24,7 +24,10 @@ import {
   addExamAccessMonths,
   buildLegacyExamEntitlementWindow,
 } from "../utils/examSubscription.service.js";
-import { examLedgerTransactionId } from "../utils/revenuecat.service.js";
+import {
+  examCodeForProductId,
+  examLedgerTransactionId,
+} from "../utils/revenuecat.service.js";
 
 test("six-month access uses calendar months", () => {
   assert.equal(
@@ -327,4 +330,54 @@ test("exam ledger keys are scoped by exam so grant and revoke agree", () => {
   assert.equal(examLedgerTransactionId(storeTransactionId, null), "");
   assert.equal(examLedgerTransactionId(`  ${storeTransactionId}  `, examId),
     `${storeTransactionId}:${examId}`);
+});
+
+test("every exam identifier the client can send resolves to an exam code", () => {
+  const examCodes = {
+    api1184: "API_1184",
+    api510: "API_510",
+    api570: "API_570",
+    api653: "API_653",
+    api936: "API_936",
+    api1169: "API_1169",
+    siee: "API_SIEE",
+    sife: "API_SIFE",
+    sire: "API_SIRE",
+  };
+
+  for (const [slug, examCode] of Object.entries(examCodes)) {
+    // iOS ships one product per duration.
+    assert.equal(
+      examCodeForProductId(`com.inspectorspath.exam.${slug}.onemonth`),
+      examCode
+    );
+    assert.equal(
+      examCodeForProductId(`com.inspectorspath.exam.${slug}.sixmonth`),
+      examCode
+    );
+    // Android keeps the six-month product ID and swaps only the base plan, so
+    // the one-month purchase arrives with a mixed-duration identifier.
+    assert.equal(
+      examCodeForProductId(
+        `com.inspectorspath.exam.${slug}.sixmonth:${slug}onemonth`
+      ),
+      examCode
+    );
+    assert.equal(
+      examCodeForProductId(
+        `com.inspectorspath.exam.${slug}.sixmonth:${slug}sixmonth`
+      ),
+      examCode
+    );
+    // Legacy lifetime products stay readable for restore/migration.
+    assert.equal(
+      examCodeForProductId(`com.inspectorspath.exam.${slug}.unlock`),
+      examCode
+    );
+  }
+
+  // An unknown identifier must not silently resolve to some other exam.
+  assert.equal(examCodeForProductId("six_month_subscriptions:six-month"), "");
+  assert.equal(examCodeForProductId(""), "");
+  assert.equal(examCodeForProductId(null), "");
 });

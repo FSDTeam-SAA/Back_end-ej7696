@@ -48,6 +48,28 @@ const EXAM_PRODUCT_CODES = new Map([
   ["com.inspectorspath.exam.siee.sixmonth:sieesixmonth", "API_SIEE"],
   ["com.inspectorspath.exam.sife.sixmonth:sifesixmonth", "API_SIFE"],
   ["com.inspectorspath.exam.sire.sixmonth:siresixmonth", "API_SIRE"],
+  // One-month identifiers. Active as of the Aug 2026 pricing change; the
+  // client swaps to these while the six-month ones above stay configured.
+  ["com.inspectorspath.exam.api1184.onemonth", "API_1184"],
+  ["com.inspectorspath.exam.api510.onemonth", "API_510"],
+  ["com.inspectorspath.exam.api570.onemonth", "API_570"],
+  ["com.inspectorspath.exam.api653.onemonth", "API_653"],
+  ["com.inspectorspath.exam.api936.onemonth", "API_936"],
+  ["com.inspectorspath.exam.api1169.onemonth", "API_1169"],
+  ["com.inspectorspath.exam.siee.onemonth", "API_SIEE"],
+  ["com.inspectorspath.exam.sife.onemonth", "API_SIFE"],
+  ["com.inspectorspath.exam.sire.onemonth", "API_SIRE"],
+  // Android keeps the six-month product ID and only swaps the base plan,
+  // since Play supports multiple base plans per subscription.
+  ["com.inspectorspath.exam.api1184.sixmonth:api1184onemonth", "API_1184"],
+  ["com.inspectorspath.exam.api510.sixmonth:api510onemonth", "API_510"],
+  ["com.inspectorspath.exam.api570.sixmonth:api570onemonth", "API_570"],
+  ["com.inspectorspath.exam.api653.sixmonth:api653onemonth", "API_653"],
+  ["com.inspectorspath.exam.api936.sixmonth:api936onemonth", "API_936"],
+  ["com.inspectorspath.exam.api1169.sixmonth:api1169onemonth", "API_1169"],
+  ["com.inspectorspath.exam.siee.sixmonth:sieeonemonth", "API_SIEE"],
+  ["com.inspectorspath.exam.sife.sixmonth:sifeonemonth", "API_SIFE"],
+  ["com.inspectorspath.exam.sire.sixmonth:sireonemonth", "API_SIRE"],
   // Legacy one-time identifiers are read for migration/restore only.
   ["com.inspectorspath.exam.api1184.unlock", "API_1184"],
   ["com.inspectorspath.exam.api510.unlock", "API_510"],
@@ -364,8 +386,15 @@ const examNamePattern = (examCode) => {
   return new RegExp(`API[\\s_-]*${suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i");
 };
 
+// The client sends a store identifier whose shape differs per platform and per
+// pricing period, so every duration/base-plan combination the app can ship must
+// resolve here. An identifier missing from the catalog is silently treated as
+// "not an exam product", which lets a paid purchase complete without unlocking.
+export const examCodeForProductId = (productId) =>
+  EXAM_PRODUCT_CODES.get(clean(productId)) || "";
+
 const findExamForProduct = async (productId) => {
-  const examCode = EXAM_PRODUCT_CODES.get(clean(productId));
+  const examCode = examCodeForProductId(productId);
   if (!examCode) return null;
   return Exam.findOne({ name: examNamePattern(examCode), status: "active" });
 };
