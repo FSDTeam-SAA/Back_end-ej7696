@@ -50,10 +50,13 @@ const DEFAULT_EXAM_PRICE = Number(process.env.EXAM_PRICE_PER_EXAM) || 150;
 const DEFAULT_PRO_PLAN_PRICE =
   Number(process.env.PROFESSIONAL_PLAN_PRICE) || 199.99;
 const DEFAULT_CURRENCY = process.env.EXAM_PRICE_CURRENCY || "USD";
-const DEFAULT_PRO_PLAN_INTERVAL_COUNT = 6;
+const DEFAULT_PRO_PLAN_INTERVAL_COUNT = 1;
 const DEFAULT_PRO_PLAN_INTERVAL_UNIT = "months";
 const DEFAULT_PRO_PLAN_DESCRIPTION = "What's included in your plan";
-const APPLE_PROFESSIONAL_PRODUCT_ID = "six_month_subscriptions";
+const APPLE_PROFESSIONAL_PRODUCT_IDS = [
+  "one_month_subscriptions",
+  "six_month_subscriptions",
+];
 const EXAM_IAP_PRODUCT_IDS = {
   API_1184: "com.inspectorspath.exam.api1184.sixmonth",
   API_510: "com.inspectorspath.exam.api510.sixmonth",
@@ -81,7 +84,7 @@ const APPLE_VERIFY_PRODUCTION_URL =
 const APPLE_VERIFY_SANDBOX_URL =
   "https://sandbox.itunes.apple.com/verifyReceipt";
 const DEFAULT_PRO_PLAN_FEATURES = [
-  "One selected exam included for 6 months",
+  "One selected exam included for 1 month",
   "Full-length mock exams",
   "Timed & full simulation modes",
   "Interactive study mode",
@@ -482,7 +485,7 @@ const assertCanPurchaseAdditionalExam = (user) => {
   if (user?.subscriptionTier !== "professional") {
     throw new AppError(
       httpStatus.FORBIDDEN,
-      "Complete the initial $199.99 subscription and select an included exam first"
+      "Complete the initial subscription and select an included exam first"
     );
   }
 };
@@ -1908,7 +1911,7 @@ export const verifyAppleProfessionalPlanPurchase = catchAsync(async (req, res) =
   if (!userId) throw new AppError(httpStatus.UNAUTHORIZED, "User not authenticated");
 
   const payload = appleVerificationPayload(req.body);
-  if (payload.productId !== APPLE_PROFESSIONAL_PRODUCT_ID) {
+  if (!APPLE_PROFESSIONAL_PRODUCT_IDS.includes(payload.productId)) {
     throw new AppError(httpStatus.BAD_REQUEST, "Apple product does not match Professional Plan");
   }
 
@@ -1936,7 +1939,7 @@ export const verifyAppleProfessionalPlanPurchase = catchAsync(async (req, res) =
   const verification = await verifyAppleReceipt(payload.receiptData);
   const transaction = findAppleTransaction({
     verification,
-    productId: APPLE_PROFESSIONAL_PRODUCT_ID,
+    productId: payload.productId,
     transactionId: payload.transactionId,
   });
   assertAppleTransactionActive(transaction);
@@ -1970,7 +1973,7 @@ export const verifyAppleProfessionalPlanPurchase = catchAsync(async (req, res) =
       referralDiscountAmount: 0,
       planFinalPrice: pricing.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
       totalAmount: pricing.professionalPlanPrice ?? DEFAULT_PRO_PLAN_PRICE,
-      appleProductId: APPLE_PROFESSIONAL_PRODUCT_ID,
+      appleProductId: payload.productId,
       appleTransactionId,
       appleOriginalTransactionId,
       paymentAccountFingerprint: appleOriginalTransactionId
@@ -2002,10 +2005,10 @@ export const verifyAppleProfessionalPlanPurchase = catchAsync(async (req, res) =
     expiresAt: subscriptionExpiresAt,
     externalTransactionId: appleTransactionId,
     originalTransactionId: appleOriginalTransactionId,
-    productId: APPLE_PROFESSIONAL_PRODUCT_ID,
+    productId: payload.productId,
     purchaseType: "plan",
     paymentFields: {
-      appleProductId: APPLE_PROFESSIONAL_PRODUCT_ID,
+      appleProductId: payload.productId,
       appleTransactionId,
       appleOriginalTransactionId,
       paymentAccountFingerprint: planPurchase.paymentAccountFingerprint,
@@ -3293,7 +3296,7 @@ export const getProfessionalPlan = catchAsync(async (req, res) => {
         features,
         initialPrice: price,
         examSubscriptionPrice: unlockExamPrice,
-        durationMonths: 6,
+        durationMonths: intervalCount,
         renewalMode: "manual",
         referralEligible: referralState.referralEligible,
         referralOffer: referralState.referralOffer,

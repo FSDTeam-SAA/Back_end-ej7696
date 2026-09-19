@@ -27,6 +27,7 @@ import {
 import {
   examCodeForProductId,
   examLedgerTransactionId,
+  isProfessionalProduct,
 } from "../utils/revenuecat.service.js";
 
 test("six-month access uses calendar months", () => {
@@ -380,4 +381,26 @@ test("every exam identifier the client can send resolves to an exam code", () =>
   assert.equal(examCodeForProductId("six_month_subscriptions:six-month"), "");
   assert.equal(examCodeForProductId(""), "");
   assert.equal(examCodeForProductId(null), "");
+});
+
+test("recognizes one-month and six-month Professional plan identifiers", () => {
+  // Env overrides still pointing at the six-month plan must not hide the
+  // one-month plan the app now sells, and vice versa.
+  const sixMonthConfig = {
+    iosProductId: "six_month_subscriptions",
+    androidProductId: "six_month_subscriptions:six-month",
+  };
+  for (const productId of [
+    "one_month_subscriptions",
+    "six_month_subscriptions:one-month",
+    "six_month_subscriptions",
+    "six_month_subscriptions:six-month",
+  ]) {
+    assert.equal(isProfessionalProduct(productId, sixMonthConfig), true);
+  }
+  assert.equal(
+    isProfessionalProduct("com.inspectorspath.exam.api510.onemonth"),
+    false
+  );
+  assert.equal(isProfessionalProduct(""), false);
 });

@@ -6,7 +6,7 @@ const appSettingSchema = new Schema(
     examUnlockPrice: { type: Number, default: 150 },
     referralCommissionRate: { type: Number, default: 0.1, min: 0, max: 1 },
     currency: { type: String, default: "USD" },
-    professionalPlanIntervalCount: { type: Number, default: 6 },
+    professionalPlanIntervalCount: { type: Number, default: 1 },
     professionalPlanIntervalUnit: { type: String, default: "months" },
     professionalPlanDescription: {
       type: String,

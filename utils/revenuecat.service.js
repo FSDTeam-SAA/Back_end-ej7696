@@ -1,6 +1,7 @@
 import httpStatus from "http-status";
 import mongoose from "mongoose";
 import AppError from "../errors/AppError.js";
+import { AppSetting } from "../model/appSetting.model.js";
 import { Exam } from "../model/exam.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { ProfessionalPlanPurchase } from "../model/professionalPlanPurchase.model.js";
@@ -82,6 +83,18 @@ const EXAM_PRODUCT_CODES = new Map([
   ["com.inspectorspath.exam.sire.unlock", "API_SIRE"],
 ]);
 
+// Every Professional plan identifier the app has shipped. The one-month plan
+// is active as of Sep 2026; the six-month IDs stay recognized so existing and
+// restored purchases still resolve, and so the client can switch back.
+export const PROFESSIONAL_PRODUCT_IDS = [
+  "one_month_subscriptions",
+  "six_month_subscriptions:one-month",
+  "six_month_subscriptions",
+  "six_month_subscriptions:six-month",
+];
+export const PROFESSIONAL_ACCESS_DURATION_MONTHS = 1;
+const DEFAULT_PROFESSIONAL_PLAN_PRICE = 199.99;
+
 const PURCHASE_EVENT_TYPES = new Set([
   "INITIAL_PURCHASE",
   "RENEWAL",
@@ -126,10 +139,10 @@ const getRevenueCatConfig = () => ({
     clean(process.env.REVENUECAT_PRO_ENTITLEMENT_LOOKUP_KEY) ||
     "professional_access",
   iosProductId:
-    clean(process.env.REVENUECAT_IOS_PRODUCT_ID) || "six_month_subscriptions",
+    clean(process.env.REVENUECAT_IOS_PRODUCT_ID) || "one_month_subscriptions",
   androidProductId:
     clean(process.env.REVENUECAT_ANDROID_PRODUCT_ID) ||
-    "six_month_subscriptions:six-month",
+    "six_month_subscriptions:one-month",
 });
 
 const requireRevenueCatApiConfig = () => {
@@ -292,7 +305,7 @@ export const isProfessionalProduct = (
   productId,
   config = getRevenueCatConfig()
 ) =>
-  [config.iosProductId, config.androidProductId]
+  [config.iosProductId, config.androidProductId, ...PROFESSIONAL_PRODUCT_IDS]
     .filter(Boolean)
     .includes(clean(productId));
 
@@ -636,7 +649,14 @@ export const syncRevenueCatCustomerAccess = async ({
       dateFromMillis(subscription?.starts_at || subscription?.current_period_starts_at) ||
       user.subscriptionStartedAt ||
       now;
-    const expiresAt = state.professionalExpiresAt || addExamAccessMonths(startsAt);
+    const expiresAt =
+      state.professionalExpiresAt ||
+      addExamAccessMonths(startsAt, PROFESSIONAL_ACCESS_DURATION_MONTHS);
+    const settings = await AppSetting.findOne()
+      .select("professionalPlanPrice")
+      .lean();
+    const planPrice =
+      settings?.professionalPlanPrice ?? DEFAULT_PROFESSIONAL_PLAN_PRICE;
     const planPurchase = await ProfessionalPlanPurchase.findOneAndUpdate(
       existingInitialPurchase ? { _id: existingInitialPurchase._id } : {
         userId: user._id,
@@ -650,9 +670,9 @@ export const syncRevenueCatCustomerAccess = async ({
           provider: "revenuecat",
           status: "completed",
           currency: "USD",
-          planBasePrice: 199.99,
-          planFinalPrice: 199.99,
-          totalAmount: 199.99,
+          planBasePrice: planPrice,
+          planFinalPrice: planPrice,
+          totalAmount: planPrice,
           revenueCatAppUserId: user._id.toString(),
           revenueCatProductId: normalizedRequestedProductId,
           revenueCatSubscriptionId: subscriptionId,
@@ -706,7 +726,7 @@ export const syncRevenueCatCustomerAccess = async ({
         if (initialExam) {
           const startsAt = initialPurchase.purchasedAt || now;
           const expiresAt = initialPurchase.metadata?.initialExamExpiresAt ||
-            addExamAccessMonths(startsAt);
+            addExamAccessMonths(startsAt, PROFESSIONAL_ACCESS_DURATION_MONTHS);
           const initialAccess = await syncExamUnlock({
             userId: user._id,
             exam: initialExam,
