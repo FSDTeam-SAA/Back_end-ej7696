@@ -6,7 +6,10 @@ import { Exam } from "../model/exam.model.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { ProfessionalPlanPurchase } from "../model/professionalPlanPurchase.model.js";
 import { User } from "../model/user.model.js";
-import { buildSelectedExamUnlockResponse } from "./examAccess.helpers.js";
+import {
+  EXAM_ACCESS_DURATION_LABEL,
+  buildSelectedExamUnlockResponse,
+} from "./examAccess.helpers.js";
 import {
   addExamAccessMonths,
   buildLegacyExamEntitlementWindow,
@@ -433,7 +436,7 @@ const unlockExamFromRevenueCat = async ({
   purchasedAt = new Date(),
   currency = "USD",
   price = 0,
-  accessDuration = "six_months",
+  accessDuration = EXAM_ACCESS_DURATION_LABEL,
   expiresAt = null,
   source = purchaseType === "plan" ? "initial_included" : "exam_subscription",
 }) => {

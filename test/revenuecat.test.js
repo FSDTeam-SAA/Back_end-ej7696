@@ -30,14 +30,21 @@ import {
   isProfessionalProduct,
 } from "../utils/revenuecat.service.js";
 
-test("six-month access uses calendar months", () => {
+test("exam access uses calendar months", () => {
+  // Default duration: one month as of the Sep 2026 store switch.
   assert.equal(
     addExamAccessMonths(new Date("2026-08-13T00:00:00.000Z")).toISOString(),
-    "2027-02-13T00:00:00.000Z"
+    "2026-09-13T00:00:00.000Z"
   );
+  // The last day of a long month lands on the last day of a shorter one.
   assert.equal(
     addExamAccessMonths(new Date("2026-08-31T00:00:00.000Z")).toISOString(),
-    "2027-02-28T00:00:00.000Z"
+    "2026-09-30T00:00:00.000Z"
+  );
+  // The paused six-month window still resolves for legacy restores.
+  assert.equal(
+    addExamAccessMonths(new Date("2026-08-13T00:00:00.000Z"), 6).toISOString(),
+    "2027-02-13T00:00:00.000Z"
   );
 });
 
@@ -149,7 +156,7 @@ test("RevenueCat v2 product identifiers are parsed defensively", () => {
   );
 });
 
-test("exam access is summarized as a six-month entitlement", () => {
+test("exam access is summarized as a one-month entitlement", () => {
   const purchasedAt = new Date("2025-01-01T00:00:00.000Z");
   const expiresAt = new Date("2025-07-01T00:00:00.000Z");
   const result = buildExamUnlockSummary({
@@ -158,7 +165,7 @@ test("exam access is summarized as a six-month entitlement", () => {
       status: "active",
       purchaseType: "exam",
       paymentStatus: "completed",
-      accessDuration: "six_months",
+      accessDuration: "one_month",
       purchasedAt,
       expiresAt,
     },
@@ -176,7 +183,7 @@ test("exam access is summarized as a six-month entitlement", () => {
     "https://cdn.example.com/exams/api-570.png"
   );
   assert.equal(result.expiresAt, expiresAt);
-  assert.equal(result.expiryMonths, 6);
+  assert.equal(result.expiryMonths, 1);
   assert.equal(result.isExpired, false);
   assert.equal(result.unlocked, true);
 });

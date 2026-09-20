@@ -3,9 +3,14 @@ import httpStatus from "http-status";
 import AppError from "../errors/AppError.js";
 import { ExamAccess } from "../model/examAccess.model.js";
 import { ExamSubscriptionTransaction } from "../model/examSubscriptionTransaction.model.js";
-import { isExamEntitlementActive } from "./examAccess.helpers.js";
+import {
+  EXAM_ACCESS_DURATION_LABEL,
+  EXAM_ACCESS_DURATION_MONTHS as EXAM_ACCESS_MONTHS,
+  LEGACY_EXAM_ACCESS_DURATION_MONTHS,
+  isExamEntitlementActive,
+} from "./examAccess.helpers.js";
 
-export const EXAM_ACCESS_DURATION_MONTHS = 6;
+export const EXAM_ACCESS_DURATION_MONTHS = EXAM_ACCESS_MONTHS;
 
 // App Store / Play Store accounts can legitimately move between application
 // accounts, and RevenueCat re-attributes their purchase history to the newest
@@ -40,7 +45,12 @@ export const buildLegacyExamEntitlementWindow = (purchasedAt) => {
     configuredMigrationDate && !Number.isNaN(configuredMigrationDate.getTime())
       ? configuredMigrationDate
       : purchaseDate;
-  return { startedAt, expiresAt: addExamAccessMonths(startedAt) };
+  // A legacy lifetime purchase was sold before the one-month switch, so it
+  // keeps the six-month window it was migrated with.
+  return {
+    startedAt,
+    expiresAt: addExamAccessMonths(startedAt, LEGACY_EXAM_ACCESS_DURATION_MONTHS),
+  };
 };
 
 export const grantExamEntitlement = async ({
@@ -139,7 +149,7 @@ export const grantExamEntitlement = async ({
         paymentStatus: "completed",
         purchasedAt: normalizedStartedAt,
         startedAt: normalizedStartedAt,
-        accessDuration: "six_months",
+        accessDuration: EXAM_ACCESS_DURATION_LABEL,
         expiresAt: normalizedExpiresAt,
         ...paymentFields,
         metadata: { ...metadata, durationMonths: EXAM_ACCESS_DURATION_MONTHS },

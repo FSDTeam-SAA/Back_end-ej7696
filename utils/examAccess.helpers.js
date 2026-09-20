@@ -1,3 +1,9 @@
+// Exam unlocks are sold as one-month subscriptions as of Sep 2026. Only
+// purchases made before the store migration keep the six-month window.
+export const EXAM_ACCESS_DURATION_MONTHS = 1;
+export const EXAM_ACCESS_DURATION_LABEL = "one_month";
+export const LEGACY_EXAM_ACCESS_DURATION_MONTHS = 6;
+
 const addMonths = (date, months) => {
   const result = new Date(date);
   result.setMonth(result.getMonth() + months);
@@ -79,7 +85,9 @@ export const buildExamUnlockSummary = ({
   const hasAccess = owned && Boolean(unlocked);
   const unlockDate = access?.startedAt || access?.purchasedAt || null;
   const isLifetime = false;
-  const fallbackExpiresAt = unlockDate ? addMonths(unlockDate, 6) : null;
+  const fallbackExpiresAt = unlockDate
+    ? addMonths(unlockDate, EXAM_ACCESS_DURATION_MONTHS)
+    : null;
   const expiresAt = access?.expiresAt || fallbackExpiresAt;
   const isExpired = expiresAt
     ? new Date(expiresAt).getTime() <= now
@@ -95,8 +103,8 @@ export const buildExamUnlockSummary = ({
     purchasedAt: unlockDate,
     expiresAt,
     startedAt: unlockDate,
-    expiryMonths: 6,
-    accessDuration: access?.accessDuration || "six_months",
+    expiryMonths: EXAM_ACCESS_DURATION_MONTHS,
+    accessDuration: access?.accessDuration || EXAM_ACCESS_DURATION_LABEL,
     accessStatus: hasAccess ? "active" : isExpired ? "expired" : access?.status,
     source: access?.source || "legacy",
     canPurchase: !hasAccess,

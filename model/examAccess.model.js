@@ -117,7 +117,7 @@ const examAccessSchema = new Schema(
     startedAt: { type: Date, default: null },
     accessDuration: {
       type: String,
-      enum: ["three_months", "six_months", "subscription", "lifetime"],
+      enum: ["one_month", "three_months", "six_months", "subscription", "lifetime"],
       default: "three_months",
     },
     expiresAt: { type: Date, default: null },
