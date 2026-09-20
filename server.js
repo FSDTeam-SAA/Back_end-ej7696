@@ -11,6 +11,7 @@ import globalErrorHandler from "./middleware/globalErrorHandler.js";
 import notFound from "./middleware/notFound.js";
 import { ResourceProduct } from "./model/resourceProduct.model.js";
 import { User } from "./model/user.model.js";
+import { resumeStorePriceUpdateJobs } from "./utils/storePricing.service.js";
 
 const app = express();
 
@@ -763,6 +764,10 @@ server.listen(PORT, async () => {
   try {
     await mongoose.connect(process.env.MONGO_DB_URL);
     console.log("MongoDB connected");
+    const resumedPriceJobs = await resumeStorePriceUpdateJobs();
+    if (resumedPriceJobs) {
+      console.log(`Resumed ${resumedPriceJobs} coordinated price update job(s)`);
+    }
   } catch (err) {
     console.error("MongoDB connection error:", err);
     process.exit(1);

@@ -35,6 +35,13 @@ import {
   recordMyRevenueCatRefundRequest,
   syncMyRevenueCatAccess,
 } from "../controller/revenuecat.controller.js";
+import {
+  deleteCoordinatedPriceUpdate,
+  getCoordinatedPriceUpdate,
+  listCoordinatedPriceUpdates,
+  retryCoordinatedPriceUpdate,
+  startCoordinatedPriceUpdate,
+} from "../controller/storePricing.controller.js";
 
 const router = express.Router();
 
@@ -77,6 +84,36 @@ router.post("/admin/exam/:examId/unlock", protect, requirePermission("manual_exa
 router.post("/admin/exam/:examId/lock", protect, requirePermission("manual_exam_unlocks"), manualLockExam);
 router.get("/admin/pricing", protect, requirePermission("manage_subscription"), getPricingSettings);
 router.patch("/admin/pricing", protect, requirePermission("manage_subscription"), updatePricingSettings);
+router.post(
+  "/admin/pricing/coordinated-updates",
+  protect,
+  requirePermission("manage_subscription"),
+  startCoordinatedPriceUpdate
+);
+router.get(
+  "/admin/pricing/coordinated-updates",
+  protect,
+  requirePermission("manage_subscription"),
+  listCoordinatedPriceUpdates
+);
+router.get(
+  "/admin/pricing/coordinated-updates/:jobId",
+  protect,
+  requirePermission("manage_subscription"),
+  getCoordinatedPriceUpdate
+);
+router.delete(
+  "/admin/pricing/coordinated-updates/:jobId",
+  protect,
+  requirePermission("manage_subscription"),
+  deleteCoordinatedPriceUpdate
+);
+router.post(
+  "/admin/pricing/coordinated-updates/:jobId/retry",
+  protect,
+  requirePermission("manage_subscription"),
+  retryCoordinatedPriceUpdate
+);
 router.get("/admin/summary", protect, requirePermission("view_billing_summary"), getRevenueSummary);
 router.get("/admin/purchases", protect, requirePermission("view_billing_summary"), listPurchases);
 router.get(
