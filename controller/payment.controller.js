@@ -522,6 +522,7 @@ const normalizeExamIapCode = (value = "") => {
 };
 
 const resolveExamAppleProductId = (exam) => {
+  if (exam?.storeProducts?.appleProductId) return exam.storeProducts.appleProductId;
   const code =
     normalizeExamIapCode(exam?.code) ||
     normalizeExamIapCode(exam?.examCode) ||

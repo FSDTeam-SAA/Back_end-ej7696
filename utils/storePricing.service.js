@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { AppSetting } from "../model/appSetting.model.js";
+import { Exam } from "../model/exam.model.js";
 import { StorePriceUpdate } from "../model/storePriceUpdate.model.js";
 
 const APPLE_API_ORIGIN = "https://api.appstoreconnect.apple.com";
@@ -35,6 +36,28 @@ export const STORE_PRICE_CATALOG = {
       basePlanId: `${code}onemonth`,
     })),
   },
+};
+
+const catalogForTarget = async (target) => {
+  const catalog = STORE_PRICE_CATALOG[target];
+  if (!catalog || target !== "exam_unlock") return catalog;
+  const exams = await Exam.find({
+    "storeProducts.appleProductId": { $exists: true, $ne: "" },
+    "storeProducts.googleProductId": { $exists: true, $ne: "" },
+    "storeProducts.googleBasePlanId": { $exists: true, $ne: "" },
+  }).select("storeProducts").lean();
+  const apple = [...catalog.apple];
+  const google = [...catalog.google];
+  for (const exam of exams) {
+    const products = exam.storeProducts;
+    if (!apple.some((item) => item.productId === products.appleProductId)) {
+      apple.push({ productId: products.appleProductId, kind: "iap" });
+    }
+    if (!google.some((item) => item.productId === products.googleProductId && item.basePlanId === products.googleBasePlanId)) {
+      google.push({ productId: products.googleProductId, basePlanId: products.googleBasePlanId });
+    }
+  }
+  return { apple, google };
 };
 
 const cleanSecret = (value = "") =>
@@ -360,7 +383,7 @@ const prepareProvider = (items) => ({
 });
 
 export const createStorePriceUpdateJob = async ({ target, newPrice, initiatedBy }) => {
-  const catalog = STORE_PRICE_CATALOG[target];
+  const catalog = await catalogForTarget(target);
   if (!catalog) throw new Error("Unsupported price update target");
   const settings = await AppSetting.findOne().lean();
   const oldPrice =
@@ -410,7 +433,10 @@ const finishProvider = async (job, providerName) => {
 export const processStorePriceUpdateJob = async (jobId) => {
   const job = await StorePriceUpdate.findById(jobId);
   if (!job) return null;
-  const catalog = STORE_PRICE_CATALOG[job.target];
+  const catalog = {
+    apple: job.apple.items.map((item) => ({ productId: item.productId, kind: job.target === "professional_plan" ? "subscription" : "iap" })),
+    google: job.google.items.map((item) => ({ productId: item.productId, basePlanId: item.basePlanId })),
+  };
   job.status = "running";
   job.startedAt = job.startedAt || new Date();
   job.lastError = "";
