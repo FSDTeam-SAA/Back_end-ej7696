@@ -41,6 +41,13 @@ const examSchema = new Schema(
       ref: "User",
       default: null,
     },
+    storeProducts: {
+      appleProductId: { type: String, trim: true, default: "" },
+      googleProductId: { type: String, trim: true, default: "" },
+      googleBasePlanId: { type: String, trim: true, default: "" },
+      revenueCatAppleProductId: { type: String, trim: true, default: "" },
+      revenueCatGoogleProductId: { type: String, trim: true, default: "" },
+    },
   },
   { timestamps: true }
 );
