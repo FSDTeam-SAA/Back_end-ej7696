@@ -411,9 +411,25 @@ export const examCodeForProductId = (productId) =>
 
 const findExamForProduct = async (productId) => {
   const examCode = examCodeForProductId(productId);
-  if (!examCode) return null;
-  return Exam.findOne({ name: examNamePattern(examCode), status: "active" });
+  if (examCode) {
+    return Exam.findOne({ name: examNamePattern(examCode), status: "active" });
+  }
+  const identifier = clean(productId);
+  const configuredExams = await Exam.find({
+    status: "active",
+    "storeProducts.appleProductId": { $exists: true, $ne: "" },
+  }).select("storeProducts name");
+  const configuredExam = configuredExams.find((exam) => {
+    const products = exam.storeProducts;
+    return [products.appleProductId, products.revenueCatAppleProductId,
+      `${products.googleProductId}:${products.googleBasePlanId}`,
+      products.revenueCatGoogleProductId].includes(identifier);
+  });
+  if (configuredExam) return configuredExam;
+  return null;
 };
+
+const isExamProductId = async (productId) => Boolean(await findExamForProduct(productId));
 
 // A professional subscription unlocks several exams over its life, so the
 // store/subscription identifier is shared across them. Entitlements are per
@@ -513,9 +529,7 @@ export const syncRevenueCatCustomerAccess = async ({
   const unresolvedProductIds = new Set();
   const unmappedProductIdentifiers = new Set();
   const normalizedRequestedProductId = clean(requestedProductId);
-  const requestedExamProductId = EXAM_PRODUCT_CODES.has(
-    normalizedRequestedProductId
-  )
+  const requestedExamProductId = await isExamProductId(normalizedRequestedProductId)
     ? normalizedRequestedProductId
     : "";
   let requestedExam = null;
@@ -751,16 +765,19 @@ export const syncRevenueCatCustomerAccess = async ({
     }
   }
 
-  const activeExamSubscriptions = state.subscriptions.filter((subscription) => {
+  const activeExamSubscriptions = [];
+  for (const subscription of state.subscriptions) {
     const productId = productIdentifierFromObject(subscription);
-    if (!EXAM_PRODUCT_CODES.has(productId) || isProfessionalProduct(productId)) {
-      return false;
+    if (!(await isExamProductId(productId)) || isProfessionalProduct(productId)) {
+      continue;
     }
     const end = dateFromMillis(
       subscription?.current_period_ends_at || subscription?.ends_at
     );
-    return Boolean(subscription?.gives_access && end && end > now);
-  });
+    if (subscription?.gives_access && end && end > now) {
+      activeExamSubscriptions.push(subscription);
+    }
+  }
   for (const subscription of activeExamSubscriptions) {
     if (user.subscriptionTier !== "professional") continue;
     const productId = productIdentifierFromObject(subscription);
@@ -803,7 +820,7 @@ export const syncRevenueCatCustomerAccess = async ({
       if (internalProductId) unresolvedProductIds.add(internalProductId);
       continue;
     }
-    if (!EXAM_PRODUCT_CODES.has(productId)) {
+    if (!(await isExamProductId(productId))) {
       unmappedProductIdentifiers.add(productId);
       continue;
     }
@@ -978,7 +995,7 @@ const upsertProfessionalPurchaseFromEvent = async ({ user, event }) => {
 
 const applyExamEvent = async ({ user, event }) => {
   const productId = clean(event.product_id);
-  if (!EXAM_PRODUCT_CODES.has(productId)) return null;
+  if (!(await isExamProductId(productId))) return null;
   const exam = await findExamForProduct(productId);
   if (!exam) return null;
 
@@ -1094,7 +1111,7 @@ export const recordRevenueCatRefundRequest = async ({
     return { accepted: false, kind: "none", user };
   }
   const state = await fetchRevenueCatCustomerState(customerId);
-  if (EXAM_PRODUCT_CODES.has(requestedProductId)) {
+  if (await isExamProductId(requestedProductId)) {
     const ownsExamSubscription = state.subscriptions.some(
       (subscription) =>
         productIdentifierFromObject(subscription) === requestedProductId

@@ -40,6 +40,7 @@ import {
   getCoordinatedPriceUpdate,
   listCoordinatedPriceUpdates,
   retryCoordinatedPriceUpdate,
+  saveExamStoreProducts,
   startCoordinatedPriceUpdate,
 } from "../controller/storePricing.controller.js";
 
@@ -84,6 +85,7 @@ router.post("/admin/exam/:examId/unlock", protect, requirePermission("manual_exa
 router.post("/admin/exam/:examId/lock", protect, requirePermission("manual_exam_unlocks"), manualLockExam);
 router.get("/admin/pricing", protect, requirePermission("manage_subscription"), getPricingSettings);
 router.patch("/admin/pricing", protect, requirePermission("manage_subscription"), updatePricingSettings);
+router.put("/admin/pricing/exams/:examId/products", protect, requirePermission("manage_subscription"), saveExamStoreProducts);
 router.post(
   "/admin/pricing/coordinated-updates",
   protect,

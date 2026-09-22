@@ -3,12 +3,58 @@ import AppError from "../errors/AppError.js";
 import catchAsync from "../utils/catchAsync.js";
 import sendResponse from "../utils/sendResponse.js";
 import { StorePriceUpdate } from "../model/storePriceUpdate.model.js";
+import { Exam } from "../model/exam.model.js";
 import {
+  STORE_PRICE_CATALOG,
   createStorePriceUpdateJob,
   queueStorePriceUpdateJob,
 } from "../utils/storePricing.service.js";
 
 const TARGETS = new Set(["professional_plan", "exam_unlock"]);
+
+export const saveExamStoreProducts = catchAsync(async (req, res) => {
+  const exam = await Exam.findById(req.params.examId).catch(() => null);
+  if (!exam) throw new AppError(httpStatus.NOT_FOUND, "Exam not found");
+  const fields = ["appleProductId", "googleProductId", "googleBasePlanId", "revenueCatAppleProductId", "revenueCatGoogleProductId"];
+  const products = Object.fromEntries(fields.map((field) => [field, String(req.body?.[field] || "").trim()]));
+  if (!products.appleProductId || !products.googleProductId || !products.googleBasePlanId ||
+      !products.revenueCatAppleProductId || !products.revenueCatGoogleProductId) {
+    throw new AppError(httpStatus.BAD_REQUEST, "All Apple, Google Play, and RevenueCat product IDs are required");
+  }
+  if (Object.values(products).some((value) => !/^[A-Za-z0-9._:-]{2,200}$/.test(value))) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Product IDs may contain letters, numbers, dots, underscores, colons, and hyphens");
+  }
+  const googleStoreId = `${products.googleProductId}:${products.googleBasePlanId}`;
+  const reserved = STORE_PRICE_CATALOG.exam_unlock;
+  const reservedIds = new Set([
+    ...reserved.apple.map((item) => item.productId),
+    ...reserved.apple.map((item) => item.productId.replace(/\.onemonth$/, ".sixmonth")),
+    ...reserved.apple.map((item) => item.productId.replace(/\.onemonth$/, ".unlock")),
+    ...reserved.google.map((item) => `${item.productId}:${item.basePlanId}`),
+    ...reserved.google.map((item) => `${item.productId}:${item.basePlanId.replace(/onemonth$/, "sixmonth")}`),
+    ...STORE_PRICE_CATALOG.professional_plan.apple.map((item) => item.productId),
+    ...STORE_PRICE_CATALOG.professional_plan.google.map((item) => `${item.productId}:${item.basePlanId}`),
+    "six_month_subscriptions",
+    "six_month_subscriptions:six-month",
+  ]);
+  if ([products.appleProductId, googleStoreId, products.revenueCatAppleProductId,
+      products.revenueCatGoogleProductId].some((id) => reservedIds.has(id))) {
+    throw new AppError(httpStatus.CONFLICT, "This store product ID is already assigned to a built-in exam");
+  }
+  const duplicate = await Exam.exists({
+    _id: { $ne: exam._id },
+    $or: [
+      { "storeProducts.appleProductId": products.appleProductId },
+      { "storeProducts.googleProductId": products.googleProductId, "storeProducts.googleBasePlanId": products.googleBasePlanId },
+      { "storeProducts.revenueCatAppleProductId": products.revenueCatAppleProductId },
+      { "storeProducts.revenueCatGoogleProductId": products.revenueCatGoogleProductId },
+    ],
+  });
+  if (duplicate) throw new AppError(httpStatus.CONFLICT, "A product ID is already assigned to another exam");
+  exam.storeProducts = products;
+  await exam.save();
+  sendResponse(res, { statusCode: httpStatus.OK, success: true, message: "Exam store products saved", data: exam });
+});
 
 const parsePrice = (value) => {
   const price = Number(value);
